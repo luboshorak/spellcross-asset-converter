@@ -1068,6 +1068,8 @@ class Frame final : public wxFrame {
                                     run_media(sibling_executable("sc_xmidi_worker"),media.dir,{"source.xmi","music.mid"});
                                     auto mid=read_media(media.dir/"music.mid",64u*1024u*1024u);sc::validate_midi(mid);
                                     derived.emplace_back("music.mid",std::move(mid));status="converted";detail="XMIDI to SMF using Reloaded converter (no instrument remap)";payload=base+"music.mid";
+                                }else if(auto context=sc::fsu_context(a,data)){
+                                    add_text("fsu-context.json",*context);status="converted";detail="Explicit supplied FSA fire origins and centers";payload=base+"fsu-context.json";
                                 }else if(auto unit_json=sc::unit_definitions(a,data)){
                                     add_text("units.json",*unit_json);status="converted";detail="Unit fields and exact original record hex";payload=base+"units.json";
                                 }else if(auto map=sc::tactical_map(a,data)){
