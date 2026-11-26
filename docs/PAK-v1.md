@@ -65,3 +65,7 @@ Source names may include multiple `::` delimiters, e.g. `DATA/INSTALL.DTA::DATA/
 ### Graphics correction (0.9.4)
 
 ICO/BTN frames optionally declare `opaque_zero_display_index:254`; original pixels stay unchanged and only an opaque zero is displayed with this palette entry. PNM/ANM source offsets are based at byte 1 of the animation container. SELECT LZ0 resources are indexed masked sprites. BML/RTA dimensions inferred from retail data; retain source bytes for verification.
+
+### Contextual preview palettes (0.9.5)
+
+Palette assignment is per resource use: strategic shared chrome, page-specific hierarchy/units/options bank, tactical INFO.PALETA.NRM, tactical terrain. The assigned palette is a default presentation context, not a restriction on how the same indexed resource can be drawn. Original index/mask planes remain unchanged.

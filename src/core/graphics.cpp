@@ -113,9 +113,10 @@ Palette tactical_palette(const Inventory& inv) {
             }catch(const std::exception&){}
         }
     };
-    bank("::MAP.PAL",0,128);
-    bank("::UNITS.PAL",128,96);
-    bank("::SYSTEM.PAL",224,32);
+    bank("T11.FS::MAP.PAL",0,128);
+    if(!p.known[0])bank("::MAP.PAL",0,128);
+    bank("COMMON.FS::UNITS.PAL",128,96);
+    bank("COMMON.FS::SYSTEM.PAL",224,32);
     return p;
 }
 static std::string upper_name(const Asset& a){
@@ -173,6 +174,21 @@ static std::optional<RawUi> raw_ui(const Asset& a){
     if(n=="HELP800.LZ0")return RawUi{800,600,false,"HELP800.PAL"};
     if(n=="HELP640.LZ0")return RawUi{640,480,false,"HELP640.PAL"};
     if(n=="BIG_MAP.LZ")return RawUi{640,480,false,"strategy"};
+    // BM_LSTA geometry confirmed by the retail 5785-pixel image and
+    // continuous vertical frame edges at x=0 and x=64.
+    if(n=="BM_LSTA.LZ")return RawUi{65,89,false,"strategy"};
+    if(n=="VMU_SLCT.LZ")return RawUi{146,17,true,"units"};
+    if(n=="ET_BTN0.LZ"||n=="ET_BTN1.LZ"||n=="ET_PAN.LZ")return RawUi{41,36,false,"strategy"};
+    if(n=="SB_UP.LZ"||n=="SB_DOWN.LZ")return RawUi{22,28,true,"strategy"};
+    if(n=="O_LEDOFF.LZ"||n=="O_LEDON.LZ")return RawUi{14,14,true,"options"};
+    if(n=="ULED_OFF.LZ"||n=="ULED_ON.LZ"||n=="ZLED_ON.LZ")return RawUi{4,4,true,"tactical"};
+    if(n.size()>=6&&n.starts_with("T0")&&n[2]>='1'&&n[2]<='4'&&
+        (n.substr(3)==".LZ"||n.substr(3)=="C.LZ"||n.substr(3)=="CH.LZ"))
+        return RawUi{200,31,true,"MAINMENU.PAL"};
+    if(n=="DIFF01.LZ"||n=="DIFF02.LZ"||n=="DIFF03.LZ"||n=="DIFF04.LZ")return RawUi{200,31,true,"MAINMENU.PAL"};
+    if(n=="MM_LOAD.LZ")return RawUi{402,255,true,"MAINMENU.PAL"};
+    if(n=="LOGO0001.LZ"||n=="NO_CD.LZ"||n=="PICTURE.LZ"||n=="SCI_LOGO.LZ"||n=="SKUSKA.LZ")
+        return RawUi{640,480,false,n.substr(0,n.size()-3)+".PAL"};
     // Hierarchy overlay dimensions used by form_level.cpp and strategic_hierarchy_layout.h.
     if(n=="BRG_ACT.LZ0")return RawUi{138,171,true,"hierarchy"};
     if(n=="PLK_ACT.LZ0")return RawUi{138,67,true,"hierarchy"};
@@ -228,27 +244,53 @@ Palette asset_palette(const Inventory& inv,const Asset& a,const Palette& tactica
         return p;
     }
     auto ui=raw_ui(a);
+    // BTN/ICO have no embedded palette. Select the screen where the resource
+    // is actually rendered, not just the file extension. A single shared
+    // asset can still be drawn with a different palette by its consumer.
+    const bool icon=a.format=="ICO"||a.format=="BTN";
+    auto prefix=[&](std::string_view p){return n.starts_with(p);};
+    bool info_icon=icon&&(prefix("IINFO_")||prefix("IEXIT_")||prefix("TEXTUP.")||prefix("TEXTDOWN.")||
+        prefix("INFOPREV.")||prefix("INFONEXT.")||prefix("INFOPICT.")||prefix("INFOPREM.")||
+        prefix("INFOGOTO.")||prefix("INFOTEXT."));
+    if(info_icon||((in_archive(a,"INFO.FS"))&&icon)){
+        for(auto& entry:inv.assets){
+            if(!in_archive(entry,"INFO.FS")||upper_name(entry)!="PALETA.NRM"||entry.size<768)continue;
+            try{auto data=preview(entry,768);Palette p{};std::copy(data.begin(),data.end(),p.rgb.begin());p.known.fill(true);return p;}
+            catch(const std::exception&){}
+        }
+        Palette unknown{};for(unsigned i=0;i<256;++i)unknown.rgb[i*3]=unknown.rgb[i*3+1]=unknown.rgb[i*3+2]=i;
+        return unknown;
+    }
+    const bool strategic_icon=icon&&(prefix("VM")||prefix("BIGMB")||prefix("BIGM2")||prefix("BMPAN")||n=="LASTTERT.ICO");
+    if(ui&&ui->palette=="tactical")return tactical;
     if(a.format=="CLK"){
         Palette p{};for(unsigned i=0;i<256;++i){p.rgb[i*3]=p.rgb[i*3+1]=p.rgb[i*3+2]=i;p.known[i]=true;}return p;
     }
-    if(!ui&&!((n.starts_with("VM")&&(a.format=="ICO"||a.format=="BTN"))||n=="LASTTERT.ICO"))return tactical;
+    if(!ui&&!strategic_icon)return tactical;
+    std::string context=ui?ui->palette:"strategy";
+    if(context=="strategy"){
+        if(prefix("VMH_")||prefix("HIERARCH"))context="hierarchy";
+        else if(prefix("VMU_")||n=="UNITS.LZ")context="units";
+        else if(prefix("VMO_")||n=="OPTIONS.LZ")context="options";
+    }
     Palette p{};
     for(unsigned i=0;i<256;++i)p.rgb[i*3]=p.rgb[i*3+1]=p.rgb[i*3+2]=i;
     auto bank=[&](std::string_view suffix,unsigned first,unsigned count){
         for(auto& entry:inv.assets){
-            if(upper_name(entry)!=suffix||entry.size!=count*3)continue;
+            if(upper_name(entry)!=suffix||entry.size!=count*3||(!in_archive(entry,"COMMON.FS")&&entry.member&&!block_name(entry).empty()))continue;
             try{auto b=preview(entry,count*3);std::copy(b.begin(),b.end(),p.rgb.begin()+first*3);
                 std::fill_n(p.known.begin()+first,count,true);return;}
             catch(const std::exception&){}
         }
     };
-    if(ui&&ui->palette!="strategy"&&ui->palette!="hierarchy"&&!ui->palette.starts_with("LEVEL_"))bank(ui->palette,0,256);
+    if(context!="strategy"&&context!="hierarchy"&&context!="units"&&context!="options"&&!context.starts_with("LEVEL_"))bank(context,0,256);
     else{
         bank("STRATEGY.PAL",0,256);bank("_SHARED1.PAL",0,128);bank("BIG_MAP.PAL",192,64);
-        if(ui&&ui->palette=="hierarchy")bank("_HIERAR.PAL",128,64);
-        if(ui&&ui->palette.starts_with("LEVEL_")){
+        std::string middle=context=="hierarchy"?"_HIERAR.PAL":context=="units"?"_UNITS.PAL":context=="options"?"_OPTIONS.PAL":context.starts_with("LEVEL_")?context:"";
+        if(!middle.empty()){
             std::fill_n(p.known.begin()+128,64,false);
-            bank(ui->palette,128,64);
+            for(unsigned i=128;i<192;++i)p.rgb[i*3]=p.rgb[i*3+1]=p.rgb[i*3+2]=i;
+            bank(middle,128,64);
         }
     }
     return p;

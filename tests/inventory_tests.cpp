@@ -306,6 +306,35 @@ int main(){
         sc::Asset sequence_asset{t.p/"SEQUENCE.PNM","SEQUENCE.PNM","PNM",0,sequence_fixture.size(),false};
         auto steps=sc::layer_children(sequence_asset,{});require(steps.size()==3&&steps[0].offset==13&&steps[1].offset==13+icon_data.size()&&steps[2].offset==13);
         require(sc::layer_bytes(sequence_asset,{steps[2]})==icon_data);
+        sc::Inventory palette_fixture;
+        auto fixture_bank=[&](const std::string& archive,const std::string& name,unsigned count,unsigned value){
+            auto file=t.p/(archive+"-"+name);B bytes(count*3,static_cast<std::uint8_t>(value));write(file,bytes);
+            palette_fixture.assets.push_back({file,archive+"::"+name,"PAL",0,bytes.size(),true});
+        };
+        fixture_bank("COMMON.FS","STRATEGY.PAL",256,10);
+        fixture_bank("COMMON.FS","_SHARED1.PAL",128,20);
+        fixture_bank("COMMON.FS","BIG_MAP.PAL",64,30);
+        fixture_bank("COMMON.FS","_HIERAR.PAL",64,40);
+        fixture_bank("COMMON.FS","_UNITS.PAL",64,50);
+        fixture_bank("COMMON.FS","_OPTIONS.PAL",64,60);
+        fixture_bank("INFO.FS","PALETA.NRM",256,70);
+        fixture_bank("COMMON.FS","MAINMENU.PAL",256,80);
+        sc::Palette tactical{};tactical.rgb.fill(90);tactical.known.fill(true);
+        sc::Asset context_asset;context_asset.member=true;context_asset.format="BTN";
+        for(auto n:{"BIGMB__N.BTN","BIGM2__N.BTN","BMPAN__N.BTN","VMMIN__N.BTN"}){
+            context_asset.name="COMMON.FS::"+std::string(n);
+            auto actual=sc::asset_palette(palette_fixture,context_asset,tactical);
+            require(actual.rgb[0]==20&&actual.rgb[128*3]==10&&actual.rgb[192*3]==30);
+        }
+        context_asset.name="COMMON.FS::IINFO__N.BTN";require(sc::asset_palette(palette_fixture,context_asset,tactical).rgb[0]==70);
+        context_asset.name="COMMON.FS::IEXIT__N.BTN";require(sc::asset_palette(palette_fixture,context_asset,tactical).rgb[0]==70);
+        context_asset.name="COMMON.FS::MAINB__N.BTN";require(sc::asset_palette(palette_fixture,context_asset,tactical).rgb[0]==90);
+        context_asset.format="LZ";
+        for(auto [name,mid]:std::vector<std::pair<std::string,int>>{{"HIERARCH.LZ",40},{"UNITS.LZ",50},{"VMU_SLCT.LZ",50},{"OPTIONS.LZ",60}}){
+            context_asset.name="COMMON.FS::"+name;require(sc::asset_palette(palette_fixture,context_asset,tactical).rgb[128*3]==mid);
+        }
+        context_asset.name="COMMON.FS::BM_LSTA.LZ";auto bm=sc::decode_image(context_asset,B(5785,196));require(bm&&bm->width==65&&bm->height==89&&bm->opaque[0]==255);
+        context_asset.name="COMMON.FS::T01.LZ";auto tut_button=sc::decode_image(context_asset,B(6200));require(tut_button&&tut_button->width==200&&tut_button->height==31&&sc::asset_palette(palette_fixture,context_asset,tactical).rgb[0]==80);
         std::cout<<"Inventory, graphics, video, atlas, semantic, campaign, music and presentation tests passed\n";
     }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}
 }
