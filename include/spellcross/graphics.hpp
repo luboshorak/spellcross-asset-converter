@@ -15,6 +15,7 @@ struct Sprite {
     Bytes indices,opaque; // original index 0 can be opaque; index 253 is shadow
     std::size_t trailing_bytes{};
     bool shadow_index{true};
+    bool opaque_zero_uses_254{}; // ICO/BTN display convention; retain original indices
 };
 Sprite decode_sprite(std::span<const std::uint8_t> data);
 struct Palette {

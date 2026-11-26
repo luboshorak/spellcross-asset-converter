@@ -173,6 +173,14 @@ static std::optional<RawUi> raw_ui(const Asset& a){
     if(n=="HELP800.LZ0")return RawUi{800,600,false,"HELP800.PAL"};
     if(n=="HELP640.LZ0")return RawUi{640,480,false,"HELP640.PAL"};
     if(n=="BIG_MAP.LZ")return RawUi{640,480,false,"strategy"};
+    // Hierarchy overlay dimensions used by form_level.cpp and strategic_hierarchy_layout.h.
+    if(n=="BRG_ACT.LZ0")return RawUi{138,171,true,"hierarchy"};
+    if(n=="PLK_ACT.LZ0")return RawUi{138,67,true,"hierarchy"};
+    if(n=="PRP_ACT.LZ0")return RawUi{142,89,true,"hierarchy"};
+    if(n=="UNT_ACT.LZ0")return RawUi{150,22,true,"hierarchy"};
+    // Inferred from exact retail decoded lengths and contiguous rectangular borders.
+    if(n=="BML_OFF.LZ0"||n=="BML_ON.LZ0")return RawUi{37,24,true,"strategy"};
+    if(n=="RTA_SEL.LZ0")return RawUi{132,16,true,"hierarchy"};
     if((n.starts_with("LEVEL_")||n.starts_with("HMLA__"))&&n.size()==11&&n.ends_with(".LZ"))return RawUi{379,259,n.starts_with("HMLA"),"LEVEL_"+n.substr(6,2)+".PAL"};
     if(n.starts_with("VM")&&n.ends_with("_FULL.LZ"))return RawUi{575,480,false,"strategy"};
     static const std::map<std::string,std::pair<int,int>> dims={
@@ -234,9 +242,10 @@ Palette asset_palette(const Inventory& inv,const Asset& a,const Palette& tactica
             catch(const std::exception&){}
         }
     };
-    if(ui&&ui->palette!="strategy"&&!ui->palette.starts_with("LEVEL_"))bank(ui->palette,0,256);
+    if(ui&&ui->palette!="strategy"&&ui->palette!="hierarchy"&&!ui->palette.starts_with("LEVEL_"))bank(ui->palette,0,256);
     else{
         bank("STRATEGY.PAL",0,256);bank("_SHARED1.PAL",0,128);bank("BIG_MAP.PAL",192,64);
+        if(ui&&ui->palette=="hierarchy")bank("_HIERAR.PAL",128,64);
         if(ui&&ui->palette.starts_with("LEVEL_")){
             std::fill_n(p.known.begin()+128,64,false);
             bank(ui->palette,128,64);
@@ -270,6 +279,11 @@ static Sprite terrain_sprite(std::span<const std::uint8_t> d){
 std::optional<Sprite> decode_image(const Asset& a,std::span<const std::uint8_t> d){
     if(a.format=="ANM-FRAME"||(a.format=="DTA"&&terrain_archive(a)))return terrain_sprite(d);
     if(a.format=="FSU-SPRITE")return decode_sprite(d);
+    auto asset_name=upper_name(a);
+    if(a.format=="LZ0"&&asset_name.size()==12&&asset_name.starts_with("SELECT_")&&asset_name[7]>='A'&&asset_name[7]<='M'&&asset_name.ends_with(".LZ0")){
+        // SELECT_A..M are masked sprite scanlines, not raw bitmaps.
+        auto mask=decode_sprite(d);mask.shadow_index=false;return mask;
+    }
     Sprite s;s.shadow_index=false;
     auto u16=[&](std::size_t i){return unsigned(d[i])|(unsigned(d[i+1])<<8);};
     auto allocate=[&](){
@@ -294,6 +308,7 @@ std::optional<Sprite> decode_image(const Asset& a,std::span<const std::uint8_t> 
     if(a.format=="ICO"||a.format=="BTN"||a.format=="PNM-FRAME"){
         if(d.size()<7)throw std::runtime_error("Truncated ICO header");
         s.y=int(u16(0));if(s.y>=32768)s.y-=65536;
+        s.opaque_zero_uses_254=a.format!="PNM-FRAME";
         s.x=int(u16(2));s.width=int(u16(4));s.height=d[6];allocate();
         std::size_t p=7;
         for(int y=0;y<s.height;++y){
@@ -338,7 +353,7 @@ std::optional<Sprite> decode_image(const Asset& a,std::span<const std::uint8_t> 
         else if(n=="I_TAB"){s.width=60;s.height=45;opaque_zero=true;}
         else if(a.format=="DTA"&&in_archive(a,"COMMON.FS")&&n.starts_with("RAM"))s.width=n.ends_with("HORZ.DTA")?76:10;
         else return std::nullopt;
-        if(!s.height){if(d.size()%s.width)throw std::runtime_error("Raw image length not divisible by known width");s.height=static_cast<int>(d.size()/s.width);}
+        if(!s.height){if(d.size()%s.width>2)throw std::runtime_error("Raw image length not divisible by known width (except retail padding)");s.height=static_cast<int>(d.size()/s.width);}
     }
     allocate();
     if(s.indices.size()>d.size()-start)throw std::runtime_error("Truncated raw image");
@@ -363,6 +378,7 @@ std::string sprite_metadata(const Asset& a,const Sprite& s,const Palette& p) {
      <<",\n  \"width\": "<<s.width<<",\n  \"height\": "<<s.height
      <<",\n  \"x_offset\": "<<s.x<<",\n  \"y_offset\": "<<s.y
      <<",\n  \"trailing_bytes\": "<<s.trailing_bytes
+     <<",\n  \"opaque_zero_display_index\": "<<(s.opaque_zero_uses_254?"254":"null")
      <<",\n  \"shadow_index\": "<<(s.shadow_index?"253":"null")<<",\n  \"preview_shadow_alpha\": "<<(s.shadow_index?"128":"null")<<","
      <<"\n  \"images\": {\"preview\":\"preview.png\",\"indices\":\"indices.png\",\"opacity\":\"opacity.png\"},"
      <<"\n  \"stored_bytes\": \"original.bin\",\n  \"palette_rgb\": [";
@@ -460,7 +476,9 @@ std::vector<LayerStep> pnm_layers(std::span<const std::uint8_t> b,bool anm=false
     if(b.empty()||!b[0]||b.size()<1+4u*b[0])throw std::runtime_error("Invalid PNM frame table");
     std::vector<std::size_t> offsets;
     for(unsigned i=0;i<b[0];++i){
-        auto off=layer_u32(b,1+4*i);
+        // AnimPNM::Decode and AnimL1::Decode advance past the count byte
+        // before interpreting every offset. Both formats share this base.
+        auto off=std::size_t(layer_u32(b,1+4*i))+1;
         if(off<1+4u*b[0])throw std::runtime_error("PNM frame overlaps table");
         layer_bounds(b,off,anm?8:7);offsets.push_back(off);
     }

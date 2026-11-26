@@ -61,3 +61,7 @@ Generated PAKs must pass ZIP CRC and length checks, manifest/schema and internal
 ### Installer source nesting (0.9.3)
 
 Source names may include multiple `::` delimiters, e.g. `DATA/INSTALL.DTA::DATA/COMMON.FS::LEVEL_02.DEF`. The nearest FS/FSU owns its package/block. INSTALL.DTA itself is retained in other.pak and nested archives in their own packages; original offsets in each package refer to the preserved container entry (not the whole ISO). Direct installer files are classified as loose assets. Selecting an installer includes its complete descendant subtree, not CD-side assets; select All game data for the full CD. IDs retain source provenance and can differ between an installed directory and an ISO input. Original bytes may be duplicated across package boundaries. No game loader changes.
+
+### Graphics correction (0.9.4)
+
+ICO/BTN frames optionally declare `opaque_zero_display_index:254`; original pixels stay unchanged and only an opaque zero is displayed with this palette entry. PNM/ANM source offsets are based at byte 1 of the animation container. SELECT LZ0 resources are indexed masked sprites. BML/RTA dimensions inferred from retail data; retain source bytes for verification.
