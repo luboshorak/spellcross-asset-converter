@@ -1299,6 +1299,65 @@ class Frame final : public wxFrame {
             log("ERROR: "+w(e.what()));wxMessageBox(w(e.what()),"Conversion interrupted",wxOK|wxICON_ERROR,this);
         }
     }
+    // One evidence bundle for every unresolved asset in the current audit.
+    // No original ISO, executable, source directory path or unrelated assets
+    // are copied. Include palette banks from the relevant FS blocks.
+    void export_graphics_evidence(const std::vector<std::pair<std::size_t,std::string>>& unresolved,
+                                  const std::string& report){
+        if(unresolved.empty())return;
+        wxDirDialog dialog(this,"Choose folder for graphics audit evidence ZIP");
+        if(dialog.ShowModal()!=wxID_OK)return;
+        std::filesystem::path dest;
+        try{
+            dest=fresh_dir(path(dialog.GetPath()),"Spellcross-graphics-audit-");
+            wxFileOutputStream output(w(sc::utf8(dest/"graphics-audit.zip")));
+            if(!output.IsOk())throw std::runtime_error("Cannot create evidence archive");
+            wxZipOutputStream zip(output);
+            zip_string(zip,"audit.txt",report);
+            std::ostringstream catalogue;
+            catalogue<<"id\tname\tformat\tstored_bytes\tstatus\n";
+            std::set<std::string> relevant_blocks;
+            for(const auto& [id,reason]:unresolved){
+                const auto& a=inv.assets.at(id);
+                const auto prefix="unresolved/"+std::to_string(id)+"/";
+                catalogue<<id<<'\t'<<tsv(a.name)<<'\t'<<a.format<<'\t'<<a.size<<'\t'<<tsv(reason)<<'\n';
+                relevant_blocks.insert(sc::block_name(a));
+                std::ostringstream detail;
+                detail<<"source_name="<<a.name<<"\nformat="<<a.format<<"\nstored_bytes="<<a.size<<"\nstatus="<<reason<<"\n";
+                if(a.size<=64u*1024u*1024u){
+                    zip_original(zip,w(prefix+"original.bin"),a);
+                    sc::Bytes decoded;bool have_decoded=false;
+                    try{decoded=sc::decode_asset(a);have_decoded=true;}
+                    catch(const std::exception& e){detail<<"decode_error="<<e.what()<<"\n";}
+                    if(have_decoded){
+                        zip_bytes(zip,w(prefix+"decoded.bin"),decoded.data(),decoded.size());
+                        detail<<sc::graphics_evidence(decoded);
+                    }
+                }else detail<<"original/decoded omitted: exceeds 64 MiB per-record safety limit\n";
+                zip_string(zip,w(prefix+"details.txt"),detail.str());
+            }
+            zip_string(zip,"unresolved.tsv",catalogue.str());
+            std::ostringstream banks;
+            banks<<"id\tname\tbytes\n";
+            for(std::size_t i=0;i<inv.assets.size();++i){
+                const auto& a=inv.assets[i];
+                auto block=sc::block_name(a);
+                if(block.empty()||(!relevant_blocks.contains(block)&&
+                   block.find("COMMON.FS")==std::string::npos))continue;
+                if((a.format!="PAL"&&a.format!="NRM")||!a.size||a.size>4096)continue;
+                zip_original(zip,w("palettes/"+std::to_string(i)+".bin"),a);
+                banks<<i<<'\t'<<tsv(a.name)<<'\t'<<a.size<<'\n';
+            }
+            zip_string(zip,"palettes.tsv",banks.str());
+            if(!zip.Close()||!output.Close())throw std::runtime_error("Evidence ZIP close failed");
+            auto message="Graphics evidence exported: "+w(sc::utf8(dest/"graphics-audit.zip"));
+            log(message);wxMessageBox(message,"Graphics audit evidence",wxOK|wxICON_INFORMATION,this);
+        }catch(const std::exception& e){
+            if(!dest.empty()){std::error_code ec;std::filesystem::remove_all(dest,ec);}
+            log("Evidence export failed: "+w(e.what()));
+            wxMessageBox(w(e.what()),"Graphics evidence export failed",wxOK|wxICON_ERROR,this);
+        }
+    }
     void validate_decoding(){
         stop_play();
         std::vector<std::size_t> ids;
@@ -1311,6 +1370,7 @@ class Frame final : public wxFrame {
         wxProgressDialog progress("Graphics coverage audit","Decoding actual images and animations...",static_cast<int>(ids.size()),this,wxPD_APP_MODAL|wxPD_CAN_ABORT|wxPD_AUTO_HIDE);
         struct Counts{std::size_t graphics{},other{},unknown{},failed{},frames{};};
         std::map<std::string,Counts> by_format;
+        std::vector<std::pair<std::size_t,std::string>> unresolved;
         std::size_t checked=0;bool cancelled=false;
         for(auto id:ids){
             const auto& a=inv.assets[id];
@@ -1339,9 +1399,9 @@ class Frame final : public wxFrame {
                 }else if(sc::is_text_asset(a,data)){
                     ++count.other;
                 }else{
-                    ++count.unknown;log("GRAPHICS UNKNOWN: "+w(a.name));
+                    ++count.unknown;unresolved.emplace_back(id,"unknown");log("GRAPHICS UNKNOWN: "+w(a.name)+" ("+number(data.size())+" decoded bytes)");
                 }
-            }catch(const std::exception& ex){++count.failed;log("GRAPHICS FAILED: "+w(a.name)+": "+w(ex.what()));}
+            }catch(const std::exception& ex){++count.failed;unresolved.emplace_back(id,ex.what());log("GRAPHICS FAILED: "+w(a.name)+": "+w(ex.what()));}
             ++checked;
         }
         progress.Update(static_cast<int>(ids.size()));
@@ -1368,6 +1428,11 @@ class Frame final : public wxFrame {
         if(cancelled)report_stream<<"Cancelled; unchecked items are excluded from counts.\n";
         auto report=w(report_stream.str());
         validation->ChangeValue(report);log(report);
+        progress.Hide();
+        if(!cancelled&&!unresolved.empty()&&wxMessageBox(
+            "Export every unresolved record and its decoded bytes/palette context to one diagnostic ZIP?",
+            "Graphics coverage audit",wxYES_NO|wxICON_QUESTION,this)==wxYES)
+            export_graphics_evidence(unresolved,report_stream.str());
     }
     void export_assets(bool all) {
         stop_play();
