@@ -107,6 +107,7 @@ bool has_game_metadata(std::string_view root){
 }
 void validate_game_metadata(std::string_view stored,std::string_view expected){
     auto actual=parse(stored);schema(actual,"spellcross-game-metadata");
+    if(stored==expected)return; // common export path: avoid retaining a second large DOM
     auto canonical=parse(expected);schema(canonical,"spellcross-game-metadata");
     if(!(actual==canonical))fail("Game metadata does not match verified package payloads");
 }
@@ -826,6 +827,9 @@ static GameAudit game_audit(std::string_view root,const std::map<std::string,Pac
                 if(r.format=="CAN"||r.format=="DPK"||r.format=="DP2"||r.format=="SMK")add("movie");
             }
             if(scope=="TEXTS.FS")add("text",false);
+            if(scope.empty()&&r.format=="SMK"&&p.category=="movies"){
+                put("movie","MOVIE.FS",leaf,t);put("movie","MOVIE.FS",game_stem(leaf),t);
+            }
         }
         for(const auto& g:p.atlas_groups){
             auto scope=archive_scope(g.group);
@@ -843,6 +847,8 @@ static GameAudit game_audit(std::string_view root,const std::map<std::string,Pac
         }
         for(const auto& c:p.fsu_contexts)contexts.push_back(&c);
     }
+    for(const auto& [key,targets]:index)if(std::get<0>(key)=="definition"&&targets.size()>1)
+        ++coverage["duplicate-definition-keys"];
     auto find=[&](const std::string& kind,const std::string& scope,const std::string& target)->const std::vector<Target>&{
         static const std::vector<Target> empty;
         auto it=index.find({kind,scope,alias_key(target)});
