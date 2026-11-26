@@ -7,6 +7,7 @@
 #include <variant>
 #include <sstream>
 #include <iomanip>
+#include <tuple>
 namespace sc::validation {
 namespace {
 [[noreturn]] void fail(const std::string& msg){throw std::runtime_error(msg);}
@@ -212,6 +213,10 @@ PackageSummary validate_package(const Entries& entries,std::string_view expected
             check_rows(layout->at("animation_by_azimuth_or_slope"),anim_az?anim_az:anim_slopes,frames);
             if(used.size()!=seen.size())fail("FSU layout does not cover all atlas frames");
         }
+        // Group is source provenance, not a filesystem path. Older external
+        // manifests may lack the optional group label.
+        const auto group=a.get("group");
+        out.atlas_groups.push_back({group?group->str():name,name,seen.size(),a.get("fsu_layout")!=nullptr});
     }
     for(auto& [id,p]:payloads){
         auto& e=entry(entries,p);
@@ -442,7 +447,36 @@ std::string resource_catalog(std::string_view root,const std::map<std::string,Pa
         }
         o<<'}';
     };
-    o<<"\n],\"by_name\":";aliases(names);o<<",\"by_leaf\":";aliases(leaves);o<<"}\n";
+    o<<"\n],\"by_name\":";aliases(names);o<<",\"by_leaf\":";aliases(leaves);
+    struct GroupLocation {const std::string* package;const AtlasGroup* atlas;};
+    std::vector<GroupLocation> groups;
+    for(const auto& [file,p]:packages)for(const auto& g:p.atlas_groups)groups.push_back({&file,&g});
+    std::sort(groups.begin(),groups.end(),[](const auto& a,const auto& b){
+        return std::tie(*a.package,a.atlas->entry)<std::tie(*b.package,b.atlas->entry);
+    });
+    std::map<std::string,std::vector<std::size_t>> full_groups,leaf_groups;
+    o<<",\"atlas_groups\":[\n";
+    for(std::size_t i=0;i<groups.size();++i){
+        auto& g=*groups[i].atlas;
+        if(i)o<<",\n";
+        o<<"{\"group\":"<<catalog_quote(g.group)<<",\"package\":"<<catalog_quote(*groups[i].package)
+         <<",\"entry\":"<<catalog_quote(g.entry)<<",\"frames\":"<<g.frames
+         <<",\"fsu_layout\":"<<(g.fsu_layout?"true":"false")<<"}";
+        full_groups[lookup_key(g.group)].push_back(i);
+        leaf_groups[leaf_key(g.group)].push_back(i);
+    }
+    auto group_aliases=[&](const auto& map){
+        o<<'{';bool first_key=true;
+        for(const auto& [key,indices]:map){
+            if(!first_key)o<<',';first_key=false;
+            o<<catalog_quote(key)<<":[";
+            for(std::size_t i=0;i<indices.size();++i){if(i)o<<',';o<<indices[i];}
+            o<<']';
+        }
+        o<<'}';
+    };
+    o<<"\n],\"by_group\":";group_aliases(full_groups);
+    o<<",\"by_group_leaf\":";group_aliases(leaf_groups);o<<"}\n";
     auto result=o.str();
     if(result.size()>64u*1024u*1024u)fail("Resource catalog exceeds limit");
     return result;
