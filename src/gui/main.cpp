@@ -1,6 +1,8 @@
 #include "spellcross/inventory.hpp"
 #include "spellcross/graphics.hpp"
 #include "spellcross/video.hpp"
+#include "spellcross/pack.hpp"
+#include <set>
 #include <wx/sound.h>
 #include <chrono>
 #include <wx/splitter.h>
@@ -47,7 +49,7 @@ void paint(wxWindow* p, bool dark=true) {
 }
 wxString number(std::uint64_t n) {return wxString::Format("%llu",static_cast<unsigned long long>(n));}
 enum {open_dir=wxID_HIGHEST+1,open_file,scan_id,export_one,export_all,save_manifest,
-    prev_id,next_id,play_id,zoom_in,zoom_out,zoom_fit,clear_id,png_one,png_group,validate_id,decoded_one,batch_id,movie_id};
+    prev_id,next_id,play_id,zoom_in,zoom_out,zoom_fit,clear_id,png_one,png_group,validate_id,decoded_one,batch_id,movie_id,modern_id};
 class ItemData final:public wxTreeItemData {
 public:
     std::size_t index;
@@ -191,6 +193,7 @@ class Frame final : public wxFrame {
     wxTextCtrl *metadata{},*raw_hex{},*text_view{};
     wxChoice *block_choice{},*encoding_choice{};
     wxButton* batch_button{};
+    wxButton* modern_button{};
     wxButton* movie_button{};
     std::map<std::string,std::vector<std::size_t>> blocks;
     std::vector<std::string> block_keys;
@@ -292,7 +295,7 @@ class Frame final : public wxFrame {
         blocks.clear();block_keys.clear();block_choice->Clear();block_choice->Append("All game data");
         for(std::size_t i=0;i<inv.assets.size();++i)blocks[sc::block_name(inv.assets[i])].push_back(i);
         for(auto& [key,ids]:blocks){block_keys.push_back(key);block_choice->Append(key.empty()?wxString("Loose files"):w(key));}
-        block_choice->SetSelection(0);batch_button->Enable(!blocks.empty());
+        block_choice->SetSelection(0);batch_button->Enable(!blocks.empty());modern_button->Enable(!blocks.empty());
     }
     void stop_play(){timer.Stop();if(play_button)play_button->SetLabel("Play sequence");}
     void refresh() {
@@ -554,6 +557,246 @@ class Frame final : public wxFrame {
         for(char ch:value){if(ch=='\\')out+="\\\\";else if(ch=='\t')out+="\\t";else if(ch=='\r')out+="\\r";else if(ch=='\n')out+="\\n";else out+=ch;}
         return out;
     }
+    static void pak_bytes(wxZipOutputStream& z,const wxString& name,const sc::Bytes& bytes,bool already_compressed=false){
+        // Fixed metadata for reproducible logical output. Store PNG without
+        // applying an additional compression pass.
+        auto* entry=new wxZipEntry(name,wxDateTime(1,wxDateTime::Jan,2000),static_cast<wxFileOffset>(bytes.size()));
+        entry->SetMethod(already_compressed?wxZIP_METHOD_STORE:wxZIP_METHOD_DEFLATE);
+        if(!z.PutNextEntry(entry))throw std::runtime_error("Cannot create PAK entry");
+        if(!bytes.empty()){z.Write(bytes.data(),bytes.size());if(z.LastWrite()!=bytes.size()||!z.IsOk())throw std::runtime_error("PAK write failed");}
+        if(!z.CloseEntry())throw std::runtime_error("PAK close entry failed");
+    }
+    static void pak_string(wxZipOutputStream& z,const wxString& name,const std::string& value){
+        pak_bytes(z,name,sc::Bytes(value.begin(),value.end()));
+    }
+    static sc::Bytes atlas_png(const sc::Bytes& plane,int width,int height){
+        wxImage im(width,height);
+        if(!im.IsOk()||plane.size()!=std::size_t(width)*height)throw std::runtime_error("Invalid atlas plane");
+        auto* rgb=im.GetData();
+        for(std::size_t i=0;i<plane.size();++i)rgb[i*3]=rgb[i*3+1]=rgb[i*3+2]=plane[i];
+        auto bytes=png_bytes(im);
+        // Verify the exact data channel values survived PNG serialization.
+        wxMemoryInputStream input(bytes.data(),bytes.size());
+        wxImage decoded;
+        if(!decoded.LoadFile(input,wxBITMAP_TYPE_PNG)||decoded.GetWidth()!=width||decoded.GetHeight()!=height)
+            throw std::runtime_error("Atlas PNG round-trip geometry mismatch");
+        auto* check=decoded.GetData();
+        for(std::size_t i=0;i<plane.size();++i)
+            if(check[i*3]!=plane[i]||check[i*3+1]!=plane[i]||check[i*3+2]!=plane[i])
+                throw std::runtime_error("Atlas PNG round-trip changed pixel values");
+        return bytes;
+    }
+    static void write_manifest_file(const std::filesystem::path& file,const std::string& value){
+        std::ofstream out(file,std::ios::binary);out<<value;out.close();
+        if(!out)throw std::runtime_error("Manifest write failed");
+    }
+    void convert_modern(){
+        using sc::pack::json;
+        stop_play();if(blocks.empty())return;
+        wxDirDialog d(this,"Choose destination for modern PAK packages");
+        if(d.ShowModal()!=wxID_OK)return;
+        const int choice=block_choice->GetSelection();
+        const bool partial=choice>0;
+        std::map<std::string,std::vector<std::size_t>> packages;
+        std::map<std::string,std::size_t> occurrences;
+        std::vector<std::string> ids(inv.assets.size());
+        for(std::size_t i=0;i<inv.assets.size();++i){
+            const auto& a=inv.assets[i];ids[i]=sc::pack::stable_id(a,++occurrences[a.name]);
+            if(partial&&sc::block_name(a)!=block_keys.at(static_cast<std::size_t>(choice-1)))continue;
+            packages[sc::pack::category(a)].push_back(i);
+        }
+        std::size_t total=0;for(auto& [key,items]:packages)total+=items.size();if(!total)return;
+        std::filesystem::path dest;
+        try{
+            dest=fresh_dir(path(d.GetPath()),"Spellcross-PAK-");
+            wxProgressDialog progress("Modern PAK conversion","Converting logical packages...",static_cast<int>(total),this,wxPD_APP_MODAL|wxPD_CAN_ABORT|wxPD_AUTO_HIDE);
+            std::size_t done=0,converted=0,decoded=0,raw=0,failed=0,containers=0,pages=0,frames=0;
+            std::uint64_t png_total=0,pixel_total=0;
+            std::ostringstream root;root<<"{\n\"schema\":\"spellcross-dataset\",\"version\":1,\"partial\":"<<(partial?"true":"false")
+                <<",\"runtime_ready\":false,\"source_kind\":"<<json(inv.source_kind)
+                <<",\"encoding_setting\":"<<json(std::string(encoding_choice->GetStringSelection().utf8_str().data()))
+                <<",\"scan_warnings\":[";
+            for(std::size_t i=0;i<inv.warnings.size();++i){if(i)root<<',';root<<json(inv.warnings[i]);}
+            root<<"],\"packages\":[\n";bool first_pack=true;
+            for(auto& [category,items]:packages){
+                if(!first_pack)root<<",\n";first_pack=false;
+                const auto filename=category+".pak";
+                wxFFileOutputStream file(w(sc::utf8(dest/filename)));
+                if(!file.IsOk())throw std::runtime_error("Cannot open PAK output");
+                wxZipOutputStream zip(file);zip.SetFormat(wxZIP_FORMAT_ZIP64);
+                std::map<std::string,std::vector<std::size_t>> groups;
+                std::map<std::string,std::vector<std::size_t>> source_containers;
+                std::map<std::size_t,std::string> container_paths;
+                // Preserve each physical top-level container exactly once. Its
+                // member offsets are relative to the stored archive, not ISO.
+                for(auto i:items){
+                    const auto& a=inv.assets[i];
+                    groups[sc::pack::group(a)].push_back(i);
+                    if(!a.member&&(a.format=="FS"||a.format=="FSU")){
+                        source_containers[a.name].push_back(i);
+                        auto loc="original/containers/"+std::to_string(i)+".bin";
+                        zip_original(zip,w(loc),a);container_paths[i]=loc;
+                    }
+                }
+                std::ostringstream manifest;manifest<<"{\"schema\":\"spellcross-pak\",\"version\":1,\"category\":"<<json(category)
+                    <<",\"partial\":"<<(partial?"true":"false")<<",\"records\":[\n";
+                bool first_record=true;
+                sc::pack::PaletteTable palettes;
+                std::vector<std::string> group_manifests;
+                std::size_t group_number=0,pack_converted=0,pack_failed=0,pack_raw=0,pack_decoded=0,pack_containers=0;
+                for(auto& [group,group_ids]:groups){
+                    const auto prefix="graphics/"+std::to_string(group_number++)+"/";
+                    sc::pack::Atlas atlas;
+                    std::size_t page=0,group_frames=0;
+                    std::ostringstream graphic_records;
+                    auto flush=[&](){
+                        if(atlas.empty())return;
+                        auto base=prefix+"page-"+std::to_string(page);
+                        auto indices=atlas_png(atlas.indices(),atlas.width(),atlas.height());
+                        auto opacity=atlas_png(atlas.opacity(),atlas.width(),atlas.height());
+                        png_total+=indices.size()+opacity.size();
+                        zip.SetLevel(0);
+                        pak_bytes(zip,w(base+"-indices.png"),indices,true);
+                        pak_bytes(zip,w(base+"-opacity.png"),opacity,true);
+                        zip.SetLevel(6);
+                        ++pages;++page;atlas=sc::pack::Atlas();
+                    };
+                    for(auto i:group_ids){
+                        const auto& a=inv.assets[i];
+                        if(!progress.Update(static_cast<int>(done),w(a.name)))throw std::runtime_error("Cancelled; incomplete output removed");
+                        std::string status="raw",detail="Format not yet converted",payload;
+                        std::string original_path;std::uint64_t relative=0;
+                        if(auto found=container_paths.find(i);found!=container_paths.end()){
+                            original_path=found->second;status="container";detail="Exact original container";
+                        }else if(a.member){
+                            auto found=source_containers.find(sc::block_name(a));
+                            if(found!=source_containers.end())for(auto candidate:found->second){
+                                const auto& source=inv.assets[candidate];
+                                if(source.backing==a.backing&&a.offset>=source.offset&&a.offset-source.offset<=source.size&&a.size<=source.size-(a.offset-source.offset)){
+                                    original_path=container_paths.at(candidate);relative=a.offset-source.offset;break;
+                                }
+                            }
+                        }
+                        auto base="records/"+std::to_string(i)+"/";
+                        std::vector<sc::Sprite> images;
+                        std::vector<std::pair<std::string,sc::Bytes>> derived;
+                        auto add_text=[&](std::string name,const std::string& s){derived.emplace_back(std::move(name),sc::Bytes(s.begin(),s.end()));};
+                        if(status!="container")try{
+                            if(a.size<=64u*1024u*1024u){
+                                auto data=sc::decode_asset(a);
+                                if(a.format=="PNM"||a.format=="ANM"){
+                                    auto children=sc::layer_children(a,{});
+                                    std::size_t pixels=0;
+                                    for(auto& child:children){
+                                        sc::LayerPath chain{child};
+                                        // Frame ranges already validated by layer_children;
+                                        // use the existing buffer rather than reread the archive.
+                                        if(child.offset>data.size()||child.size>data.size()-child.offset)throw std::runtime_error("Animation frame outside payload");
+                                        auto im=sc::layer_image(a,chain,std::span<const std::uint8_t>(data).subspan(child.offset,child.size));
+                                        if(!im)throw std::runtime_error("Unsupported animation frame");
+                                        if(im->indices.size()>32u*1024u*1024u-pixels)throw std::runtime_error("Animation preview exceeds memory limit");
+                                        pixels+=im->indices.size();images.push_back(std::move(*im));
+                                    }
+                                    if(images.empty())throw std::runtime_error("Empty animation");
+                                }else if(auto im=sc::decode_image(a,data))images.push_back(std::move(*im));
+                                else if(sc::is_text_asset(a,data)){
+                                    auto utf=decode_text(data).utf8_str();add_text("text.txt",std::string(utf.data(),utf.length()));
+                                    status="converted";detail="UTF-8 text";payload=base+"text.txt";
+                                }else if(a.format=="PAL"&&data.size()>=3&&data.size()<=768&&data.size()%3==0){
+                                    derived.emplace_back("palette.rgb",std::move(data));status="converted";detail="Original RGB triples";payload=base+"palette.rgb";
+                                }else if(a.format=="PAL"&&data.size()==256){
+                                    derived.emplace_back("filter.u8",std::move(data));status="converted";detail="Original color index filter";payload=base+"filter.u8";
+                                }else if(sc::compressed(a)){
+                                    derived.emplace_back("decoded.bin",std::move(data));status="decoded";detail="Decompressed payload, semantic format not converted";payload=base+"decoded.bin";
+                                }
+                                if(!images.empty()){
+                                    for(auto& im:images){
+                                        if(im.width<=0||im.height<=0||im.width>2048||im.height>2048||
+                                           im.indices.size()!=std::size_t(im.width)*im.height||im.opaque.size()!=im.indices.size())
+                                            throw std::runtime_error("Image geometry exceeds atlas limits or is empty");
+                                    }
+                                    status="converted";detail="Indexed pixels and geometry; original semantics retained in source";
+                                    payload=prefix+"frames.json";
+                                }
+                            }else detail="Asset exceeds conversion memory limit";
+                        }catch(const std::exception& e){images.clear();derived.clear();status="failed";detail=e.what();payload.clear();log("PAK: "+w(a.name)+": "+w(detail));}
+                        if(!images.empty()){
+                            const auto palette_id=palettes.intern(sc::asset_palette(inv,a,palette));
+                            for(std::size_t frame=0;frame<images.size();++frame){
+                                const auto& im=images[frame];auto rect=atlas.add(im);
+                                if(!rect){flush();rect=atlas.add(im);}
+                                if(!rect)throw std::runtime_error("Atlas placement failed");
+                                if(group_frames++)graphic_records<<",\n";
+                                graphic_records<<"{\"id\":"<<json(ids[i])<<",\"frame\":"<<frame<<",\"page\":"<<page
+                                    <<",\"rect\":["<<rect->x<<','<<rect->y<<','<<rect->width<<','<<rect->height<<"]"
+                                    <<",\"origin\":["<<im.x<<','<<im.y<<"],\"palette\":"<<palette_id
+                                    <<",\"shadow_index\":"<<(im.shadow_index?"253":"null")<<",\"trailing_bytes\":"<<im.trailing_bytes<<"}";
+                                pixel_total+=im.indices.size();++frames;
+                            }
+                        }
+                        for(auto& [name,bytes]:derived)pak_bytes(zip,w(base+name),bytes);
+                        std::string fallback;
+                        // Raw or failed assets must be directly addressable.
+                        // Converted members reference the one preserved container.
+                        if(status!="container"&&(original_path.empty()||status=="raw"||status=="failed"||status=="decoded")){
+                            fallback=base+"original.bin";zip_original(zip,w(fallback),a);
+                            if(original_path.empty()){original_path=fallback;relative=0;}
+                        }
+                        if(status=="converted"){++converted;++pack_converted;}
+                        else if(status=="decoded"){++decoded;++pack_decoded;}
+                        else if(status=="failed"){++failed;++pack_failed;}
+                        else if(status=="container"){++containers;++pack_containers;}
+                        else{++raw;++pack_raw;}
+                        if(!first_record)manifest<<",\n";first_record=false;
+                        manifest<<"{\"id\":"<<json(ids[i])<<",\"name\":"<<json(a.name)<<",\"format\":"<<json(a.format)
+                            <<",\"status\":"<<json(status)<<",\"detail\":"<<json(detail)
+                            <<",\"original\":{\"entry\":"<<json(original_path)<<",\"offset\":"<<relative<<",\"size\":"<<a.size<<"}";
+                        if(!payload.empty())manifest<<",\"payload\":"<<json(payload);
+                        if(!fallback.empty())manifest<<",\"fallback\":"<<json(fallback);
+                        manifest<<"}";++done;
+                    }
+                    flush();
+                    if(group_frames){
+                        auto meta=prefix+"frames.json";std::ostringstream o;
+                        o<<"{\"schema\":\"spellcross-atlas\",\"version\":1,\"group\":"<<json(group)<<",\"pages\":[";
+                        for(std::size_t i=0;i<page;++i){
+                            if(i)o<<',';auto base=prefix+"page-"+std::to_string(i);
+                            o<<"{\"indices\":"<<json(base+"-indices.png")<<",\"opacity\":"<<json(base+"-opacity.png")<<"}";
+                        }
+                        o<<"],\"frames\":[\n"<<graphic_records.str()<<"\n]}";
+                        pak_string(zip,w(meta),o.str());group_manifests.push_back(meta);
+                    }
+                }
+                manifest<<"\n],\"graphics\":[";
+                for(std::size_t i=0;i<group_manifests.size();++i){if(i)manifest<<',';manifest<<json(group_manifests[i]);}
+                manifest<<"],\"palettes\":[";
+                for(std::size_t i=0;i<palettes.values.size();++i){
+                    const auto& p=palettes.values[i];auto base="palettes/"+std::to_string(i);
+                    pak_bytes(zip,w(base+".rgb"),sc::Bytes(p.rgb.begin(),p.rgb.end()));
+                    sc::Bytes known;for(bool v:p.known)known.push_back(v?1:0);
+                    pak_bytes(zip,w(base+".known"),known);
+                    if(i)manifest<<',';manifest<<"{\"rgb\":"<<json(base+".rgb")<<",\"known\":"<<json(base+".known")<<"}";
+                }
+                manifest<<"]}\n";pak_string(zip,"manifest.json",manifest.str());
+                if(!zip.Close())throw std::runtime_error("PAK finalization failed");
+                if(!file.Close())throw std::runtime_error("PAK file close failed");
+                root<<"{\"file\":"<<json(filename)<<",\"category\":"<<json(category)<<",\"records\":"<<items.size()
+                    <<",\"converted\":"<<pack_converted<<",\"decoded\":"<<pack_decoded<<",\"raw\":"<<pack_raw
+                    <<",\"failed\":"<<pack_failed<<",\"containers\":"<<pack_containers<<"}";
+            }
+            root<<"\n],\"atlas_metrics\":{\"frames\":"<<frames<<",\"pages\":"<<pages<<",\"source_pixels\":"<<pixel_total
+                <<",\"png_bytes\":"<<png_total<<"}}\n";
+            write_manifest_file(dest/"manifest.json",root.str());
+            progress.Update(static_cast<int>(total));
+            auto summary=number(packages.size())+" PAK packages\n"+number(converted)+" converted, "+number(decoded)+" decoded, "+number(raw)+" raw, "+number(failed)+" failed, "+number(containers)+" original containers.\n"+
+                number(frames)+" atlas frames / "+number(pages)+" pages; "+number(png_total)+" PNG bytes.\n"+
+                "Draft data format; not yet loadable by SR.\n"+w(sc::utf8(dest));
+            log(summary);wxMessageBox(summary,"Modern conversion finished",wxOK|wxICON_INFORMATION,this);
+        }catch(const std::exception& e){
+            if(!dest.empty()){std::error_code ec;std::filesystem::remove_all(dest,ec);if(ec)log("ERROR: Could not remove incomplete PAK output");}
+            log("PAK ERROR: "+w(e.what()));wxMessageBox(w(e.what()),"Modern conversion interrupted",wxOK|wxICON_ERROR,this);
+        }
+    }
     void convert_blocks(){
         stop_play();if(blocks.empty())return;
         wxDirDialog d(this,"Choose destination for converted ZIP bundles");
@@ -698,7 +941,7 @@ public:
         auto* root=new wxBoxSizer(wxVERTICAL);SetSizer(root);
         auto* header=new wxPanel(this);paint(header,false);auto* hs=new wxBoxSizer(wxVERTICAL);header->SetSizer(hs);
         label(header,hs,"SPELLCROSS  /  ASSET CONVERTER",true);
-        label(header,hs,"RELOADED TOOLKIT   |   v0.5.0   |   Original data inventory");
+        label(header,hs,"RELOADED TOOLKIT   |   v0.6.0   |   Original data inventory");
         root->Add(header,0,wxEXPAND);
         tabs=new wxNotebook(this,wxID_ANY);root->Add(tabs,1,wxALL|wxEXPAND,10);
         wxBoxSizer* s;
@@ -754,10 +997,11 @@ public:
         auto* browserBottom=new wxBoxSizer(wxHORIZONTAL);s->Add(browserBottom,0,wxEXPAND);
         button(browser,browserBottom,save_manifest,"Save inventory manifest");
         auto* conversion=page("Extraction / Conversion",s);
-        label(conversion,s,"Convert game data to ZIP bundles",true);
-        label(conversion,s,"Choose all game data or one logical archive.\nSupported assets are converted automatically; original bytes are always retained.");
+        label(conversion,s,"Modern game data (.pak)",true);
+        label(conversion,s,"Choose all game data or one source archive.\nCreate logical PAK packages with shared indexed atlases, palettes and manifests.\nUnconverted assets and original containers are preserved.");
         block_choice=new wxChoice(conversion,wxID_ANY);block_choice->Append("All game data");block_choice->SetSelection(0);s->Add(block_choice,0,wxEXPAND|wxALL,10);
-        batch_button=button(conversion,s,batch_id,"Convert and package");batch_button->Enable(false);
+        modern_button=button(conversion,s,modern_id,"Convert to modern PAK");modern_button->Enable(false);
+        batch_button=button(conversion,s,batch_id,"Diagnostic ZIP export (legacy)");batch_button->Enable(false);
         label(conversion,s,"Lossless raw extraction",true);
         label(conversion,s,"Export all parsed FS / FSU members to a fresh folder.\nStored bytes are preserved; For individual exports use Asset Browser.");
         all_button=button(conversion,s,export_all,"Extract all FS / FSU members");all_button->Enable(false);
@@ -773,7 +1017,7 @@ public:
         Bind(wxEVT_MENU,[this](wxCommandEvent&){analyze();},scan_id);
         Bind(wxEVT_MENU,[this](wxCommandEvent&){export_manifest();},save_manifest);
         Bind(wxEVT_MENU,[this](wxCommandEvent&){Close();},wxID_EXIT);
-        Bind(wxEVT_MENU,[this](wxCommandEvent&){wxMessageBox("Spellcross Asset Converter 0.5.0\nPart of Spellcross Reloaded\nMIT license\nCopyright (c) 2026 Luboš Horák\nSpellcross Reloaded by Luboš Horák; foundations by Stanislav Mašláň.\nhttps://github.com/luboshorak/spellcross-reloaded\nCAN decoder: CPAL-1.0; libsmacker: LGPL-2.1-or-later.","About",wxOK|wxICON_INFORMATION,this);},wxID_ABOUT);
+        Bind(wxEVT_MENU,[this](wxCommandEvent&){wxMessageBox("Spellcross Asset Converter 0.6.0\nPart of Spellcross Reloaded\nMIT license\nCopyright (c) 2026 Luboš Horák\nSpellcross Reloaded by Luboš Horák; foundations by Stanislav Mašláň.\nhttps://github.com/luboshorak/spellcross-reloaded\nCAN decoder: CPAL-1.0; libsmacker: LGPL-2.1-or-later.","About",wxOK|wxICON_INFORMATION,this);},wxID_ABOUT);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){choose(true);},open_dir);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){choose(false);},open_file);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){analyze();},scan_id);
@@ -805,6 +1049,7 @@ public:
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){export_decoded();},decoded_one);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){validate_decoding();},validate_id);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){convert_blocks();},batch_id);
+        Bind(wxEVT_BUTTON,[this](wxCommandEvent&){convert_modern();},modern_id);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){play_video();},movie_id);
         tabs->Bind(wxEVT_NOTEBOOK_PAGE_CHANGED,[this](wxBookCtrlEvent& e){if(e.GetSelection()!=1)stop_play();e.Skip();});
         Centre();
