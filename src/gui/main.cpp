@@ -277,7 +277,7 @@ class Frame final : public wxFrame {
                 "\n\nEdition language: "+w(sc::edition_language(inv)));
             validation->SetLabel("INSTALL.DTA / FS / FSU directory and member bounds checked during scan.\n"+
                 number(inv.warnings.size())+" warning(s). See Log for details.\n"+
-                "Use Validate compressed assets to check LZ and FSU decoding. Checksums are not yet implemented.");
+                "Use Audit graphics coverage to check LZ and FSU decoding. Checksums are not yet implemented.");
             rebuild_blocks();refresh();
             SetStatusText("Inventory ready");
             tabs->SetSelection(1);
@@ -1300,21 +1300,58 @@ class Frame final : public wxFrame {
     void validate_decoding(){
         stop_play();
         std::vector<std::size_t> ids;
-        for(std::size_t i=0;i<inv.assets.size();++i)
-            if(inv.assets[i].format=="FSU-SPRITE"||inv.assets[i].format=="LZ"||inv.assets[i].format=="LZ0")ids.push_back(i);
-        if(ids.empty()){validation->SetLabel("No supported compressed assets in inventory.");return;}
-        wxProgressDialog progress("Decode validation","Checking compressed assets...",static_cast<int>(ids.size()),this,wxPD_APP_MODAL|wxPD_CAN_ABORT|wxPD_AUTO_HIDE);
-        std::size_t ok=0,bad=0;bool cancelled=false;
+        for(std::size_t i=0;i<inv.assets.size();++i){
+            const auto& a=inv.assets[i];auto& fmt=a.format;
+            if(sc::compressed(a)||fmt=="DTA"||fmt=="ANM"||fmt=="PNM"||
+               fmt=="ICO"||fmt=="BTN"||fmt=="CUR"||fmt=="GFK"||fmt=="CLK"||fmt=="FNT")ids.push_back(i);
+        }
+        if(ids.empty()){validation->SetLabel("No graphics candidates in inventory.");return;}
+        wxProgressDialog progress("Graphics coverage audit","Decoding actual images and animations...",static_cast<int>(ids.size()),this,wxPD_APP_MODAL|wxPD_CAN_ABORT|wxPD_AUTO_HIDE);
+        struct Counts{std::size_t graphics{},other{},unknown{},failed{},frames{};};
+        std::map<std::string,Counts> by_format;
+        std::size_t checked=0;bool cancelled=false;
         for(auto id:ids){
             const auto& a=inv.assets[id];
-            if((ok+bad)%32==0&&!progress.Update(static_cast<int>(ok+bad),w(a.name))){cancelled=true;break;}
-            try{auto d=sc::decode_asset(a);if(a.format=="FSU-SPRITE")sc::decode_sprite(d);++ok;}
-            catch(const std::exception& e){++bad;log("VALIDATION: "+w(a.name)+": "+w(e.what()));}
+            if(checked%16==0&&!progress.Update(static_cast<int>(checked),w(a.name))){cancelled=true;break;}
+            auto& count=by_format[a.format];
+            try{
+                auto data=sc::decode_asset(a);
+                if(a.format=="ANM"||a.format=="PNM"){
+                    auto children=sc::layer_children(a,{});
+                    if(children.empty())throw std::runtime_error("Animation has no frames");
+                    std::size_t frames=0;
+                    for(auto& child:children){
+                        if(child.offset>data.size()||child.size>data.size()-child.offset)throw std::runtime_error("Frame outside animation");
+                        auto im=sc::layer_image(a,{child},std::span<const std::uint8_t>(data).subspan(child.offset,child.size));
+                        if(!im||im->width<=0||im->height<=0)throw std::runtime_error("Unsupported or empty animation frame");
+                        ++frames;
+                    }
+                    ++count.graphics;count.frames+=frames;
+                }else if(auto map=sc::tactical_map(a,data)){
+                    ++count.other; // map, not a bitmap
+                }else if(auto font=sc::decode_font(a,data)){
+                    ++count.graphics;count.frames+=font->glyphs.size();
+                }else if(auto im=sc::decode_image(a,data)){
+                    if(im->width<=0||im->height<=0)throw std::runtime_error("Empty decoded image");
+                    ++count.graphics;++count.frames;
+                }else if(sc::is_text_asset(a,data)){
+                    ++count.other;
+                }else{
+                    ++count.unknown;log("GRAPHICS UNKNOWN: "+w(a.name));
+                }
+            }catch(const std::exception& ex){++count.failed;log("GRAPHICS FAILED: "+w(a.name)+": "+w(ex.what()));}
+            ++checked;
         }
         progress.Update(static_cast<int>(ids.size()));
-        auto summary="Decode validation: "+number(ok)+" passed, "+number(bad)+" failed, "+number(ids.size()-ok-bad)+" not checked.\n"+
-            number(inv.warnings.size())+" structural warnings. See Log."+(cancelled?wxString("\nCancelled."):wxString());
-        validation->SetLabel(summary);log(summary);
+        Counts total;wxString report="Graphics coverage audit (decoded geometry, not visual parity)\n";
+        report+="Format | graphics | other | unknown | failed | frames\n";
+        for(auto& [fmt,c]:by_format){
+            report+=w(fmt)+" | "+number(c.graphics)+" | "+number(c.other)+" | "+number(c.unknown)+" | "+number(c.failed)+" | "+number(c.frames)+"\n";
+            total.graphics+=c.graphics;total.other+=c.other;total.unknown+=c.unknown;total.failed+=c.failed;total.frames+=c.frames;
+        }
+        report+="TOTAL | "+number(total.graphics)+" | "+number(total.other)+" | "+number(total.unknown)+" | "+number(total.failed)+" | "+number(total.frames)+"\n";
+        report+=number(checked)+" / "+number(ids.size())+" candidates checked; "+number(inv.warnings.size())+" scan warnings."+(cancelled?wxString("\nCancelled."):wxString());
+        validation->SetLabel(report);log(report);
     }
     void export_assets(bool all) {
         stop_play();
@@ -1364,7 +1401,7 @@ public:
         auto* root=new wxBoxSizer(wxVERTICAL);SetSizer(root);
         auto* header=new wxPanel(this);paint(header,false);auto* hs=new wxBoxSizer(wxVERTICAL);header->SetSizer(hs);
         label(header,hs,"SPELLCROSS  /  ASSET CONVERTER",true);
-        label(header,hs,"RELOADED TOOLKIT   |   v0.9.5   |   Original data inventory");
+        label(header,hs,"RELOADED TOOLKIT   |   v0.9.6   |   Original data inventory");
         root->Add(header,0,wxEXPAND);
         tabs=new wxNotebook(this,wxID_ANY);root->Add(tabs,1,wxALL|wxEXPAND,10);
         wxBoxSizer* s;
@@ -1433,7 +1470,7 @@ public:
         all_button=button(conversion,s,export_all,"Extract all FS / FSU members");all_button->Enable(false);
         auto* valid=page("Validation",s);label(valid,s,"Structural checks",true);
         validation=label(valid,s,"No inventory.");
-        button(valid,s,validate_id,"Validate compressed assets");
+        button(valid,s,validate_id,"Audit graphics coverage");
         button(valid,s,validate_pak_id,"Validate modern PAK dataset");
         auto* logs=page("Log",s);label(logs,s,"Operation log",true);
         log_box=new wxTextCtrl(logs,wxID_ANY,"",wxDefaultPosition,wxDefaultSize,wxTE_MULTILINE|wxTE_READONLY);
@@ -1444,7 +1481,7 @@ public:
         Bind(wxEVT_MENU,[this](wxCommandEvent&){analyze();},scan_id);
         Bind(wxEVT_MENU,[this](wxCommandEvent&){export_manifest();},save_manifest);
         Bind(wxEVT_MENU,[this](wxCommandEvent&){Close();},wxID_EXIT);
-        Bind(wxEVT_MENU,[this](wxCommandEvent&){wxMessageBox("Spellcross Asset Converter 0.9.5\nPart of Spellcross Reloaded\nMIT license\nCopyright (c) 2026 Luboš Horák\nSpellcross Reloaded by Luboš Horák; foundations by Stanislav Mašláň.\nhttps://github.com/luboshorak/spellcross-reloaded\nCAN decoder: CPAL-1.0; libsmacker: LGPL-2.1-or-later.","About",wxOK|wxICON_INFORMATION,this);},wxID_ABOUT);
+        Bind(wxEVT_MENU,[this](wxCommandEvent&){wxMessageBox("Spellcross Asset Converter 0.9.6\nPart of Spellcross Reloaded\nMIT license\nCopyright (c) 2026 Luboš Horák\nSpellcross Reloaded by Luboš Horák; foundations by Stanislav Mašláň.\nhttps://github.com/luboshorak/spellcross-reloaded\nCAN decoder: CPAL-1.0; libsmacker: LGPL-2.1-or-later.","About",wxOK|wxICON_INFORMATION,this);},wxID_ABOUT);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){choose(true);},open_dir);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){choose(false);},open_file);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){analyze();},scan_id);

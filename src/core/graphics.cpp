@@ -309,8 +309,18 @@ static Sprite terrain_sprite(std::span<const std::uint8_t> d){
     for(int y=0;y<s.height;++y){
         if(d.size()-pos<4)throw std::runtime_error("Truncated terrain scanline");
         unsigned x=d[pos],full=d[pos+2],part=d[pos+3];pos+=4;
-        if(4*full+8*part>d.size()-pos||x+4*(full+part)>80)throw std::runtime_error("Terrain scanline out of bounds");
-        auto put=[&](unsigned pixel){auto at=std::size_t(y)*80+x++;s.indices[at]=static_cast<std::uint8_t>(pixel);s.opaque[at]=pixel?255:0;};
+        if(4*full+8*part>d.size()-pos)throw std::runtime_error("Truncated terrain scanline data");
+        // Retail Sprite::Decode trims trailing transparent alignment pixels.
+        // Consume and check all encoded groups, even if a zero pad pixel
+        // extends beyond the logical 80-pixel tile. Never write out of bounds
+        // and never silently discard a nontransparent source pixel.
+        auto put=[&](unsigned pixel){
+            if(x<80){
+                auto at=std::size_t(y)*80+x;
+                s.indices[at]=static_cast<std::uint8_t>(pixel);s.opaque[at]=pixel?255:0;
+            }else if(pixel)throw std::runtime_error("Nontransparent terrain pixel outside 80-pixel tile");
+            ++x;
+        };
         for(unsigned j=0;j<full*4;++j)put(d[pos++]);
         for(unsigned j=0;j<part;++j,pos+=8){
             for(unsigned k=0;k<4;++k){if(d[pos+4+k]!=(d[pos+k]?0:255))throw std::runtime_error("Invalid terrain opacity mask");put(d[pos+k]);}
