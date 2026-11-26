@@ -410,6 +410,17 @@ int main(){
         require(graphics_summary.audit_records.at(0).assessment=="semantic-review"&&
                 graphics_summary.audit_records.at(0).notes=="Missing FSU layout");
         {
+            require(graphics_summary.atlas_groups.size()==1&&graphics_summary.atlas_groups[0].group=="a"&&
+                    graphics_summary.atlas_groups[0].entry=="frames.json"&&graphics_summary.atlas_groups[0].frames==1&&
+                    !graphics_summary.atlas_groups[0].fsu_layout);
+            require(graphics_summary.audit_records[0].atlas_entry=="frames.json"&&graphics_summary.audit_records[0].atlas_frames==1);
+            const auto graphics_root=R"({"schema":"spellcross-dataset","version":1,"partial":false,"runtime_ready":false,"resource_catalog":"resources.json","packages":[{"file":"units.pak","category":"units","records":1,"converted":1,"decoded":0,"raw":0,"failed":0,"containers":0}],"coverage_by_format":{"units/FSU-SPRITE":{"converted":1}},"atlas_metrics":{"frames":1,"pages":1,"source_pixels":9,"png_bytes":24}})";
+            const auto graphic_catalog=resource_catalog(graphics_root,{{"units.pak",graphics_summary}});
+            require(graphic_catalog.find("\"by_group\":{\"A\":[0]}")!=std::string::npos);
+            require(graphic_catalog.find("\"atlas\":{\"entry\":\"frames.json\",\"frames\":1}")!=std::string::npos);
+            validate_resource_catalog(graphic_catalog,graphics_root,{{"units.pak",graphics_summary}});
+        }
+        {
             // Small retail table fixtures: preserve exact bit positions and values.
             sc::Asset table_asset;table_asset.member=true;table_asset.name="COMMON.FS::LEVEL_02.SSD";table_asset.format="SSD";
             B adjacency(128);le(adjacency,4,0x8000001cu);
