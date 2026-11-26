@@ -4,6 +4,7 @@
 #include "spellcross/pack.hpp"
 #include <algorithm>
 #include <sstream>
+#include <set>
 #include <stdexcept>
 namespace sc {
 namespace {
@@ -164,10 +165,58 @@ std::optional<std::string> unit_definitions(const Asset& a,Span d){
         num("sound_move",0xbf);num("sound_light",0xc0);num("sound_armored",0xc1);num("sound_air",0xc2);num("sound_hit",0xc3);
         num("sound_action",0xc4);num("sound_selection",0xc5);
         o<<",\"exp_min\":"<<u32(r,off(0xc6))<<",\"exp_max\":"<<u32(r,off(0xca));
+        const auto cls=r[0x3a];const auto fire=en?u16(r,0x47):unsigned(r[0x47]);
+        auto boolean=[&](const char* name,bool value){o<<",\""<<name<<"\":"<<(value?"true":"false");};
+        o<<",\"class_semantics\":{\"target_class\":"<<pack::json((cls&0x30)==0?"air":(cls&0x30)==0x10?"light":(cls&0x30)==0x20?"armored":"unknown");
+        boolean("turret",cls&1);boolean("walk",cls&2);boolean("fly",cls&4);boolean("hover",cls&8);boolean("organic",cls&0x40);
+        o<<",\"unknown_bits\":"<<unsigned(cls&0x80)<<"}";
+        o<<",\"fire_semantics\":{\"flags\":"<<fire;
+        boolean("indirect",fire&2);boolean("steals_ap",fire&4);boolean("cannot_fire_from_slopes",fire&0x10);
+        boolean("indirect_missile",fire&0x20);boolean("fire_projectile",fire&0x40);boolean("fire_sensitive",fire&0x80);boolean("fire_healed",fire&0x100);
+        o<<",\"uncertain_bits\":"<<(fire&~0x1f6u)<<"}";
+        o<<",\"projectile_targets\":{\"light\":"<<((r[off(0x94)]&1)?"true":"false");
+        boolean("armored",r[off(0x94)]&2);boolean("air",r[off(0x94)]&4);
+        o<<",\"unknown_bits\":"<<unsigned(r[off(0x94)]&0xf8)<<"}";
+        o<<",\"unmapped_bytes\":{\"0x44\":"<<unsigned(r[off(0x44)])
+         <<",\"0xa3\":"<<unsigned(r[off(0xa3)])<<",\"0xbc\":"<<unsigned(r[off(0xbc)])
+         <<",\"0xbe\":"<<unsigned(r[off(0xbe)])<<"}";
         o<<",\"original_hex\":\"";constexpr char hex[]="0123456789abcdef";
         for(auto b:r)o<<hex[b>>4]<<hex[b&15];o<<"\"}";
     }
     o<<"\n]}\n";return o.str();
+}
+// Optional editor-generated units.fsa, not part of ordinary retail ISO.
+// Layout: FSUarchive::LoadAuxData (Maslan, MIT). Keep signed coordinates
+// exactly as supplied and never synthesize default fire origins.
+std::optional<std::string> fsu_context(const Asset& a,Span d){
+    if(a.format!="FSA"||leaf(a.name)!="UNITS.FSA")return std::nullopt;
+    constexpr char magic[]="SpellFSUcontextV1.0";
+    if(d.size()<sizeof(magic)||!std::equal(std::begin(magic),std::end(magic),d.begin()))
+        throw std::runtime_error("Unsupported FSA context header");
+    std::size_t p=sizeof(magic);
+    auto read32=[&](){auto x=u32(d,p);p+=4;return x;};
+    auto read16=[&](){auto x=u16(d,p);p+=2;return x;};
+    auto count=[&](unsigned limit){auto n=read32();if(n>limit)throw std::runtime_error("FSA count outside limit");return n;};
+    auto coord=[&](){auto v=read32();return v>=0x80000000u?std::int64_t(v)-0x100000000ll:std::int64_t(v);};
+    auto n=count(10000);std::vector<std::string> names;std::set<std::string> seen;
+    for(unsigned i=0;i<n;++i){
+        auto len=read16();if(!len||len>64)throw std::runtime_error("Invalid FSA resource name");
+        check(d,p,len);std::string name(d.begin()+p,d.begin()+p+len);p+=len;
+        if(std::any_of(name.begin(),name.end(),[](unsigned char c){return c<32||c>=127;})||!seen.insert(upper(name)).second)
+            throw std::runtime_error("Invalid or duplicate FSA resource name");
+        names.push_back(std::move(name));
+    }
+    std::ostringstream o;o<<"{\"schema\":\"spellcross-fsu-context\",\"version\":1,\"resources\":[";
+    auto point=[&](){auto x=coord(),y=coord();o<<'['<<x<<','<<y<<']';};
+    auto points=[&](unsigned n){o<<'[';for(unsigned i=0;i<n;++i){if(i)o<<',';point();}o<<']';};
+    for(unsigned i=0;i<n;++i){
+        if(i)o<<',';o<<"{\"group\":"<<pack::json(names[i])<<",\"static\":[";
+        auto slopes=count(13);
+        for(unsigned j=0;j<slopes;++j){if(j)o<<',';o<<"{\"fire_origins\":";points(count(256));o<<",\"fire_center\":";point();o<<'}';}
+        o<<"],\"animation\":{\"fire_origins\":";points(count(256));o<<",\"fire_center\":";point();o<<"}}";
+    }
+    if(p!=d.size())throw std::runtime_error("Unexpected FSA trailing bytes");
+    o<<"]}";return o.str();
 }
 std::optional<BitmapFont> decode_font(const Asset& a,Span d){
     if(leaf(a.name)!="FONT_001.FNT")return std::nullopt;
