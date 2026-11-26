@@ -909,6 +909,7 @@ class Frame final : public wxFrame {
             std::size_t done=0,converted=0,decoded=0,raw=0,failed=0,containers=0,pages=0,frames=0;
             std::uint64_t png_total=0,pixel_total=0;
             std::map<std::string,std::map<std::string,std::size_t>> coverage;
+            std::vector<std::pair<std::size_t,std::string>> unresolved;
             std::ostringstream root;root<<"{\n\"schema\":\"spellcross-dataset\",\"version\":1,\"partial\":"<<(partial?"true":"false")
                 <<",\"runtime_ready\":false,\"source_kind\":"<<json(inv.source_kind)
                 <<",\"edition_language\":"<<json(edition)
@@ -1012,13 +1013,15 @@ class Frame final : public wxFrame {
                         auto base="records/"+std::to_string(i)+"/";
                         std::vector<sc::Sprite> images;
                         bool font_asset=false,synthetic=false;
+                        const bool legacy_only=status!="container"&&sc::legacy_support_asset(a);
                         MediaWork media;
                         bool movie_output=false;
                         std::string font_meta;
                         std::vector<std::pair<std::string,sc::Bytes>> derived;
                         auto add_text=[&](std::string name,const std::string& s){derived.emplace_back(std::move(name),sc::Bytes(s.begin(),s.end()));};
                         if(status!="container")try{
-                            if(sc::is_video(a)){
+                            if(legacy_only){detail="Original DOS installation/support resource; preserved for archival use";}
+                            else if(sc::is_video(a)){
                                 if(ffmpeg.empty()||!wxFileExists(ffmpeg))detail="FFmpeg unavailable; original movie retained";
                                 else{
                                     media.create(dest);
@@ -1038,7 +1041,9 @@ class Frame final : public wxFrame {
                             }else if(a.size<=64u*1024u*1024u){
                                 auto data=sc::decode_asset(a);
                                 auto music=sc::music_kind(data);
-                                if(auto rows=sc::language_table(a,data)){
+                                if(auto table=sc::retail_table(a,data)){
+                                    add_text("retail-table.json",table->json);status="converted";detail="Retail table: "+table->kind;payload=base+"retail-table.json";
+                                }else if(auto rows=sc::language_table(a,data)){
                                     add_text("language.json",localization_json(a,*rows));
                                     const auto decoded_text=decode_text(data,&a);auto utf=decoded_text.utf8_str();add_text("source.txt",std::string(utf.data(),utf.length()));
                                     status="converted";detail="Positional UTF-8 language table";payload=base+"language.json";
@@ -1160,6 +1165,8 @@ class Frame final : public wxFrame {
                             fallback=base+"original.bin";zip_original(zip,w(fallback),a);
                             if(original_path.empty()){original_path=fallback;relative=0;}
                         }
+                        if(!legacy_only&&!synthetic&&(status=="raw"||status=="failed"||status=="decoded"))
+                            unresolved.emplace_back(i,detail);
                         ++coverage[category+"/"+a.format][status];
                         if(status=="converted"){++converted;++pack_converted;}
                         else if(status=="decoded"){++decoded;++pack_decoded;}
@@ -1170,6 +1177,7 @@ class Frame final : public wxFrame {
                         manifest<<"{\"id\":"<<json(ids[i])<<",\"name\":"<<json(a.name)<<",\"format\":"<<json(a.format)
                             <<",\"status\":"<<json(status)<<",\"detail\":"<<json(detail)
                             <<",\"original\":{\"entry\":"<<json(original_path)<<",\"offset\":"<<relative<<",\"size\":"<<a.size<<"}";
+                        if(legacy_only)manifest<<",\"role\":\"legacy-only\"";
                         if(!payload.empty())manifest<<",\"payload\":"<<json(payload);
                         if(!fallback.empty())manifest<<",\"fallback\":"<<json(fallback);
                         manifest<<"}";++done;
@@ -1239,6 +1247,30 @@ class Frame final : public wxFrame {
             write_manifest_file(dest/"pak-audit.txt",verified.summary);
             write_manifest_file(dest/"pak-audit.tsv",verified.records_tsv);
             validation->ChangeValue(w(verified.summary));log(w(verified.summary));
+            // One small optional diagnostic archive, not part of the PAK dataset.
+            // Avoid large media copies; retain an explicit index of omitted assets.
+            if(!unresolved.empty()){
+                try{
+                    wxFFileOutputStream evidence(w(sc::utf8(dest/"pak-unresolved.zip")));
+                    if(!evidence.IsOk())throw std::runtime_error("Cannot create unresolved evidence");
+                    wxZipOutputStream zip(evidence);
+                    std::ostringstream catalogue;catalogue<<"id\tname\tformat\tstored_bytes\tentry\treason\n";
+                    std::uint64_t budget=16u*1024u*1024u;
+                    for(const auto& [i,reason]:unresolved){
+                        const auto& a=inv.assets[i];std::string location;
+                        if(a.size<=budget&&a.size<=4u*1024u*1024u){
+                            location="original/"+std::to_string(i)+".bin";
+                            zip_original(zip,w(location),a);budget-=a.size;
+                        }
+                        catalogue<<tsv(ids[i])<<'\t'<<tsv(a.name)<<'\t'<<a.format<<'\t'<<a.size<<'\t'<<location<<'\t'<<tsv(reason)<<'\n';
+                    }
+                    zip_string(zip,"unresolved.tsv",catalogue.str());
+                    if(!zip.Close()||!evidence.Close())throw std::runtime_error("Cannot finalize unresolved evidence");
+                }catch(const std::exception& e){
+                    std::error_code ec;std::filesystem::remove(dest/"pak-unresolved.zip",ec);
+                    log("Optional unresolved evidence: "+w(e.what()));
+                }
+            }
             progress.Update(static_cast<int>(total));
             auto summary=number(packages.size())+" PAK packages\n"+number(converted)+" converted, "+number(decoded)+" decoded, "+number(raw)+" raw, "+number(failed)+" failed, "+number(containers)+" original containers.\n"+
                 number(frames)+" atlas frames / "+number(pages)+" pages; "+number(png_total)+" PNG bytes.\n"+
@@ -1608,7 +1640,7 @@ public:
         Bind(wxEVT_MENU,[this](wxCommandEvent&){analyze();},scan_id);
         Bind(wxEVT_MENU,[this](wxCommandEvent&){export_manifest();},save_manifest);
         Bind(wxEVT_MENU,[this](wxCommandEvent&){Close();},wxID_EXIT);
-        Bind(wxEVT_MENU,[this](wxCommandEvent&){wxMessageBox("Spellcross Asset Converter 0.9.11.2\nPart of Spellcross Reloaded\nMIT license\nCopyright (c) 2026 Luboš Horák\nSpellcross Reloaded by Luboš Horák; foundations by Stanislav Mašláň.\nhttps://github.com/luboshorak/spellcross-reloaded\nCAN decoder: CPAL-1.0; libsmacker: LGPL-2.1-or-later.","About",wxOK|wxICON_INFORMATION,this);},wxID_ABOUT);
+        Bind(wxEVT_MENU,[this](wxCommandEvent&){wxMessageBox("Spellcross Asset Converter 0.9.12\nPart of Spellcross Reloaded\nMIT license\nCopyright (c) 2026 Luboš Horák\nSpellcross Reloaded by Luboš Horák; foundations by Stanislav Mašláň.\nhttps://github.com/luboshorak/spellcross-reloaded\nCAN decoder: CPAL-1.0; libsmacker: LGPL-2.1-or-later.","About",wxOK|wxICON_INFORMATION,this);},wxID_ABOUT);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){choose(true);},open_dir);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){choose(false);},open_file);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){analyze();},scan_id);

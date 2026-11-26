@@ -65,6 +65,70 @@ std::optional<Pcm> decode_sample(const Asset& a,Span d){
     if(n.starts_with("U"))return riff(d);
     return std::nullopt;
 }
+
+bool legacy_support_asset(const Asset& a){
+    auto n=leaf(a.name),full=upper(a.name);
+    std::replace(full.begin(),full.end(),'\\','/');
+    const auto block=leaf(block_name(a));
+    if(block=="INSTALL.FS"&&n.size()==7&&n.starts_with("MSG")&&
+       std::all_of(n.begin()+3,n.end(),[](char c){return c>='0'&&c<='9';}))return true;
+    // Explicit DOS support paths and filenames, not a blanket rule for
+    // unknown extensions or all contents of INSTALL.DTA.
+    if(full.find("::DRIVERS/")!=std::string::npos||full.starts_with("DRIVERS/")){
+        return a.format=="DIG"||a.format=="MDI"||n=="1024.GUS"||
+            n=="FATMAN.AD"||n=="FATMAN.OPL"||n=="MSSDRVR.LST"||
+            n=="DOS4GW.EXE"||n=="MSSW95.EXE"||n=="SETSOUND.EXE";
+    }
+    if(!a.member&& (n=="DOS4GW.EXE"||n=="INSTALUJ.EXE"||n=="INSTALL.EXE"||
+       n=="INSTALUJ.PCX"||n=="SPELCROS.EXE"||n=="SETUP.BAT"))return true;
+    return full.find("INSTALL.DTA::")!=std::string::npos&&
+        (n=="DOS4GW.EXE"||n=="SPELCROS.EXE"||n=="SETUP.BAT")&&
+        full.find("::",full.find("INSTALL.DTA::")+13)==std::string::npos;
+}
+std::optional<RetailTable> retail_table(const Asset& a,Span d){
+    const auto n=leaf(a.name),block=leaf(block_name(a));
+    std::ostringstream o;
+    std::string kind;
+    auto header=[&](const char* k){kind=k;o<<"{\"schema\":\"spellcross-retail-table\",\"version\":1,\"kind\":"<<pack::json(kind);};
+    auto values=[&](Span b){o<<'[';for(std::size_t i=0;i<b.size();++i){if(i)o<<',';o<<unsigned(b[i]);}o<<']';};
+    if(block=="COMMON.FS"&&a.format=="SSD"&&n.size()==12&&n.starts_with("LEVEL_")&&n.ends_with(".SSD")){
+        if(d.size()!=128)throw std::runtime_error("Unexpected SSD adjacency table length");
+        header("territory-adjacency");
+        o<<",\"masks\":[";
+        for(unsigned i=0;i<32;++i){if(i)o<<',';o<<u32(d,i*4);}
+        o<<"],\"neighbors\":[";
+        for(unsigned i=0;i<32;++i){
+            if(i)o<<',';o<<'[';bool first=true;
+            const auto mask=u32(d,i*4);
+            for(unsigned bit=0;bit<32;++bit)if(mask&(std::uint32_t(1)<<bit)){
+                if(!first)o<<',';first=false;o<<bit;
+            }
+            o<<']';
+        }
+        o<<']';
+    }else if(block=="COMMON.FS"&&n=="GAMMA.TBL"){
+        if(d.size()!=704||std::any_of(d.begin(),d.end(),[](auto v){return v>63;}))
+            throw std::runtime_error("Unexpected gamma table layout");
+        header("gamma-table");o<<",\"rows\":[";
+        for(unsigned i=0;i<11;++i){if(i)o<<',';values(d.subspan(i*64,64));}
+        o<<']';
+    }else if((block=="T11.FS"||block=="PUST.FS"||block=="DEVAST.FS")&&n=="MAPCOLOR.COL"){
+        if(d.size()!=11)throw std::runtime_error("Unexpected terrain color table length");
+        header("terrain-color-indices");o<<",\"values\":";values(d);
+        o<<",\"slot_semantics\":\"unverified\"";
+    }else if(block=="INFO.FS"&&(n=="PALETA.DRK"||n=="PALETA.LGH"||n=="PALETA.NRM")){
+        const bool normal=n=="PALETA.NRM";
+        if(d.size()!=(normal?768u:256u))throw std::runtime_error("Unexpected INFO palette/filter length");
+        header(normal?"info-rgb-palette":"info-index-filter");
+        o<<",\"role\":"<<pack::json(normal?"normal":n=="PALETA.DRK"?"dark":"light")<<",\"values\":";values(d);
+    }else if(block=="COMMON.FS"&&(n=="_BUY.PAL"||n=="_INFO.PAL"||n=="_RSEARCH.PAL"||n=="_STATS.PAL")){
+        // A CRLF-only record contains no RGB triples. Do not invent a bank.
+        if(d.size()!=2||d[0]!=13||d[1]!=10)return std::nullopt;
+        header("empty-palette");o<<",\"values\":[],\"original_bytes\":";values(d);
+    }else return std::nullopt;
+    o<<'}';return RetailTable{kind,o.str()};
+}
+
 std::optional<std::string> unit_definitions(const Asset& a,Span d){
     if(leaf(a.name)!="JEDNOTKY.DEF")return std::nullopt;
     bool cz=!d.empty()&&d.size()%206==0, en=!d.empty()&&d.size()%207==0;
