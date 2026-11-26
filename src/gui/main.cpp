@@ -1389,6 +1389,10 @@ class Frame final : public wxFrame {
                         ++frames;
                     }
                     ++count.graphics;count.frames+=frames;
+                }else if(sc::music_kind(data)==sc::MusicKind::midi){
+                    sc::validate_midi(data);++count.other;
+                }else if(sc::music_kind(data)==sc::MusicKind::xmidi){
+                    sc::validate_xmidi(data);++count.other;
                 }else if(auto map=sc::tactical_map(a,data)){
                     ++count.other; // map, not a bitmap
                 }else if(auto font=sc::decode_font(a,data)){
