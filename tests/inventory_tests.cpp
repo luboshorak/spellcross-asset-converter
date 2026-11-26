@@ -3,6 +3,7 @@
 #include "spellcross/video.hpp"
 #include "spellcross/pack.hpp"
 #include "spellcross/semantic.hpp"
+#include "spellcross/campaign.hpp"
 #include <algorithm>
 #include <chrono>
 #include <fstream>
@@ -162,6 +163,24 @@ int main(){
         auto units_json=sc::unit_definitions(defs,units_data);require(units_json&&units_json->find("\"fire_flags\":513")!=std::string::npos&&units_json->find("\"shot_ap\":7")!=std::string::npos&&units_json->find("\"action_id\":13")!=std::string::npos);
         sc::Asset font;font.name="COMMON.FS::FONT_001.FNT";auto glyphs=sc::decode_font(font,B{1,9,1,0x80,0x80});
         require(glyphs&&glyphs->glyphs.size()==33&&glyphs->glyphs[32].indices[0]==1&&glyphs->glyphs[32].indices[8]==1&&glyphs->glyphs[32].indices[1]==0);
-        std::cout<<"Inventory, graphics, video, atlas and semantic tests passed\n";
+        sc::Asset script;script.format="DEF";script.name="RESEARCH.DEF";
+        std::string source="Item(6) {\r\n ORconnections(77)\r\n ORconnections(124)\r\n FutureCall(001,100%,a name,-)\r\n}\x1a";
+        auto script_json=sc::script_definition(script,B(source.begin(),source.end()));
+        require(script_json&&script_json->find("\"command_count\":3")!=std::string::npos&&script_json->find("\"args\":[\"001\",\"100%\",\"a name\",\"-\"]")!=std::string::npos);
+        require(script_json->find("\"args\":[\"77\"]")<script_json->find("\"args\":[\"124\"]"));
+        // 1x1 map: one L1 sprite, no L2 objects, no animations, posts or sounds.
+        B map_data(26);le(map_data,0,34);le(map_data,4,1);map_data[8]=0x12;map_data[9]=1;map_data[11]=1;
+        str(map_data,13,"T11");
+        map_data.resize(34);str(map_data,26,"TILE");
+        map_data.insert(map_data.end(),{0,0x20}); // elevation 2
+        map_data.insert(map_data.end(),4,0); // L2 count
+        map_data.insert(map_data.end(),{0,0x81}); // original flags
+        map_data.insert(map_data.end(),8*4,0); // L3, L4, L5, L6, sound tables/counts
+        map_data.insert(map_data.end(),{0xab,0xcd});
+        sc::Asset map_asset;map_asset.format="DTA";map_asset.name="COMMON.FS::M01_01.DTA";
+        auto modern_map=sc::tactical_map(map_asset,map_data);
+        require(modern_map&&modern_map->ground==B({0,0x20})&&modern_map->objects==B({0,0x81})&&modern_map->metadata.find("\"trailing_hex\":\"abcd\"")!=std::string::npos);
+        map_data[34]=1;bool rejected=false;try{sc::tactical_map(map_asset,map_data);}catch(const std::exception&){rejected=true;}require(rejected);
+        std::cout<<"Inventory, graphics, video, atlas, semantic and campaign tests passed\n";
     }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}
 }
