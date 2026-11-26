@@ -20,6 +20,7 @@ struct AuditRecord {
     std::string original_entry,fallback_entry,atlas_entry;
     std::uint64_t original_offset{},atlas_frames{};
 };
+struct AtlasGroup {std::string group,entry;std::uint64_t frames{};bool fsu_layout{};};
 struct PackageSummary {
     std::string category;
     std::map<std::string,std::uint64_t> counts;
@@ -28,6 +29,7 @@ struct PackageSummary {
     std::uint64_t original_bytes{},derived_bytes{},metadata_bytes{},unattributed_bytes{};
     std::uint64_t zip_entries{},archive_bytes{};
     std::vector<AuditRecord> audit_records;
+    std::vector<AtlasGroup> atlas_groups;
 };
 struct DatasetPackage {std::string file,category;};
 bool safe_entry(std::string_view);
