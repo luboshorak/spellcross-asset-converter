@@ -300,6 +300,18 @@ int main(){
         require(coverage_report.summary.find("modern-payload: 1")!=std::string::npos&&
                 coverage_report.summary.find("not certified")!=std::string::npos&&
                 coverage_report.records_tsv.find("utf8-text")!=std::string::npos);
+        std::vector<SourceRecord> source_records{{"a#1","a","TXT","common",2}};
+        auto matched_report=audit_report(dataset,{{"common.pak",summary}},&source_records);
+        require(matched_report.summary.find("checked against selected scan")!=std::string::npos);
+        source_records[0].size=3;
+        bool mismatched_source=false;
+        try{audit_report(dataset,{{"common.pak",summary}},&source_records);}catch(const std::exception&){mismatched_source=true;}
+        require(mismatched_source);
+        source_records[0].size=2;
+        source_records.push_back({"missing#1","missing","TXT","common",1});
+        bool missing_source=false;
+        try{audit_report(dataset,{{"common.pak",summary}},&source_records);}catch(const std::exception&){missing_source=true;}
+        require(missing_source);
         // Distinguish semantic conversion from decoding and raw fallback.
         Entries audit_entries;
         audit_entries["original/container.bin"].size=100;
