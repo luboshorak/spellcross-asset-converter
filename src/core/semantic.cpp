@@ -40,7 +40,15 @@ Pcm riff(Span d){
             if(have_data)throw std::runtime_error("Multiple WAVE data chunks");
             samples=d.subspan(p+8,len);have_data=true;
         }
-        p+=8+std::size_t(len);if(len&1){if(p>=end)throw std::runtime_error("Missing RIFF padding");++p;}
+        const bool data_chunk=tag(d,p,"data");
+        p+=8+std::size_t(len);
+        if(len&1){
+            // Retail WAVE may omit final alignment after odd-sized PCM data.
+            // Never tolerate missing samples or missing intermediate padding.
+            if(p==end&&p==d.size()&&data_chunk&&fmt&&have_data)break;
+            if(p>=end)throw std::runtime_error("Missing RIFF padding");
+            ++p;
+        }
         if(fmt&&have_data)break; // original loader tolerates unused trailing chunks
     }
     if(!fmt||!have_data)throw std::runtime_error("Missing WAVE chunks");

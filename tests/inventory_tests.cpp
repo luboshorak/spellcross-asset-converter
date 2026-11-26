@@ -240,6 +240,22 @@ int main(){
         auto sample=sc::decode_sample(sound,B{0,128,255});
         require(sample&&sample->samples==std::vector<std::int16_t>({-32768,0,32512})&&sample->rate==11025);
         auto round=sc::decode_sample(sound,sc::pcm_wave(sample->samples,sample->rate,sample->channels));require(round&&round->samples==sample->samples);
+        // Retail RIFF with an odd number of 8-bit PCM samples and no
+        // final pad byte: all sample bytes are present and recoverable.
+        B odd_wave{'R','I','F','F',39,0,0,0,'W','A','V','E','f','m','t',' ',16,0,0,0,
+                   1,0,1,0,17,43,0,0,17,43,0,0,1,0,8,0,'d','a','t','a',3,0,0,0,0,128,255};
+        sound.name="SAMPLES.FS::U0614_00";
+        auto odd_pcm=sc::decode_sample(sound,odd_wave);
+        require(odd_pcm&&odd_pcm->rate==11025&&odd_pcm->samples==sample->samples);
+        auto odd_round=sc::decode_sample(sound,sc::pcm_wave(odd_pcm->samples,odd_pcm->rate,odd_pcm->channels));
+        require(odd_round&&odd_round->samples==odd_pcm->samples);
+        auto padded_wave=odd_wave;padded_wave.push_back(0);le(padded_wave,4,40);
+        require(sc::decode_sample(sound,padded_wave)->samples==odd_pcm->samples);
+        auto truncated_wave=odd_wave;truncated_wave.pop_back();
+        bool truncated_pcm=false;try{sc::decode_sample(sound,truncated_wave);}catch(const std::exception&){truncated_pcm=true;}require(truncated_pcm);
+        auto intermediate=odd_wave;intermediate.insert(intermediate.begin()+12,{'J','U','N','K',1,0,0,0,7});
+        le(intermediate,4,static_cast<std::uint32_t>(intermediate.size()-8));
+        bool bad_intermediate=false;try{sc::decode_sample(sound,intermediate);}catch(const std::exception&){bad_intermediate=true;}require(bad_intermediate);
         sound.name="SAMPLES.FS::MTEST";auto stereo=sc::decode_sample(sound,B{0,0,255,255,0,128,1,128});
         require(stereo&&stereo->channels==2&&stereo->samples==std::vector<std::int16_t>({-32768,32767,0,1}));
         sc::Asset defs;defs.name="COMMON.FS::JEDNOTKY.DEF";B units_data(207);units_data[0]='A';units_data[0x47]=1;units_data[0x48]=2;units_data[0x49]=7;units_data[0xa3]=13;
