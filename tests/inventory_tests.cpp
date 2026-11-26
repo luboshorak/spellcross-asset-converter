@@ -1,4 +1,5 @@
 #include "spellcross/inventory.hpp"
+#include "spellcross/graphics.hpp"
 #include <algorithm>
 #include <chrono>
 #include <fstream>
@@ -45,6 +46,40 @@ int main(){
         auto it=std::find_if(image.assets.begin(),image.assets.end(),[](auto& a){return a.name.ends_with("HELLO.TXT");});
         require(it!=image.assets.end()&&sc::preview(*it)==B({'a','b','c'}));
         require(sc::manifest(image).find("COMMON.FS::HELLO.TXT")!=std::string::npos);
-        std::cout<<"Inventory tests passed\n";
+        // Minimal custom dictionary (A,B), codes A,B,AB,clear,clear.
+        // Widths: 2,3,3,3,2 (the first insertion reserves clear slot).
+        auto lz=[](const B& raw){
+            // Literal-only encoder for synthetic fixture, 256 implicit symbols.
+            B packed{0,1,9};unsigned width=9,count=256,bit=0;
+            auto put=[&](unsigned code){
+                for(int i=static_cast<int>(width)-1;i>=0;--i){
+                    if(!bit)packed.push_back(0);
+                    packed.back()|=((code>>i)&1)<<(7-bit);
+                    bit=(bit+1)%8;
+                }
+            };
+            for(auto c:raw){put(c);++count;if(count+1>=1u<<width)++width;}
+            put(256);width=9;put(256);
+            return packed;
+        };
+        B sprite{1,0,128,0, 0xfe,0xff,1,1, 0,128,253,255, 4,5,6,7, 0,255,0,255};
+        auto compressed=lz(sprite);
+        require(sc::decode_lz(compressed)==sprite);
+        auto decoded=sc::decode_sprite(sprite);
+        require(decoded.x==-2&&decoded.y==128&&decoded.width==7&&decoded.height==1);
+        require(decoded.indices[0]==0&&decoded.opaque[0]==255&&decoded.opaque[5]==0&&decoded.indices[2]==253);
+        bool failed=false;try{sc::decode_lz(compressed,2);}catch(const std::exception&){failed=true;}require(failed);
+        failed=false;try{sc::decode_sprite(B{1,0,0,0});}catch(const std::exception&){failed=true;}require(failed);
+        B fsu(28+compressed.size());le(fsu,4,1);str(fsu,8,"TEST_");le(fsu,13,17);
+        fsu[17]=1;str(fsu,19,"000");le(fsu,22,28);
+        fsu[26]=compressed.size()&255;fsu[27]=compressed.size()>>8;
+        std::copy(compressed.begin(),compressed.end(),fsu.begin()+28);write(t.p/"UNITS.FSU",fsu);
+        auto units=sc::scan(t.p/"UNITS.FSU");
+        require(units.fsu_archives==1&&units.fsu_resources==1&&units.fsu_sprites==1&&units.assets.size()==2);
+        auto spr=std::find_if(units.assets.begin(),units.assets.end(),[](auto& a){return a.format=="FSU-SPRITE";});
+        require(spr!=units.assets.end()&&spr->name=="UNITS.FSU::TEST/000"&&sc::decode_asset(*spr)==sprite);
+        le(fsu,22,0xffffffff);write(t.p/"BROKEN.FSU",fsu);
+        auto broken=sc::scan(t.p/"BROKEN.FSU");require(broken.warnings.size()==1&&broken.assets.size()==1);
+        std::cout<<"Inventory and graphics tests passed\n";
     }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}
 }

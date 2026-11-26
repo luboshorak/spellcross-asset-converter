@@ -24,3 +24,5 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+LZ dictionary and FSU resource/scanline layout references: `LZ_spell.cpp`, `LZ_spell.h`, `fsu_archive.cpp`, `fsu_archive.h`, Spellcross Map Editor, copyright (c) 2021–2025 Stanislav Maslan, MIT license (same terms above).

@@ -90,9 +90,52 @@ static void inspect_fs(Inventory& out, const Asset& a) {
         out.warnings.push_back(a.name+": "+e.what());
     }
 }
+// FSU layout: 4-byte prefix, u32 resource count, 5-byte name/u32 offset.
+// Each resource is u16 sprite count followed by 3-byte name/u32 offset/u16 length.
+// Layout reference: Stanislav Maslan's MIT-licensed FSUarchive.
+static void inspect_fsu(Inventory& out,const Asset& a) {
+    try {
+        Reader r(a.backing);
+        bounds(a.offset,a.size,r.size);
+        bounds(0,8,a.size);
+        std::array<std::uint8_t,9> b{};
+        r.read(a.offset+4,b.data(),4);
+        const U count=le(b.data());
+        if(count>10000 || count>(a.size-8)/9)
+            throw std::runtime_error("Invalid FSU resource count");
+        std::vector<Asset> sprites;
+        for(U i=0;i<count;++i) {
+            r.read(a.offset+8+i*9,b.data(),9);
+            auto group=std::string(b.begin(),std::find(b.begin(),b.begin()+5,0));
+            while(!group.empty()&&group.back()=='_')group.pop_back();
+            if(group.empty())throw std::runtime_error("Empty FSU resource name");
+            const U off=le(b.data()+5);
+            bounds(off,2,a.size);
+            if(off<8+9*count)throw std::runtime_error("FSU resource overlaps header");
+            r.read(a.offset+off,b.data(),2);
+            const U n=unsigned(b[0])|(unsigned(b[1])<<8);
+            bounds(off+2,n*9,a.size);
+            if(n>max_assets-out.assets.size()-sprites.size())
+                throw std::runtime_error("FSU sprite count exceeds inventory limit");
+            for(U j=0;j<n;++j) {
+                r.read(a.offset+off+2+j*9,b.data(),9);
+                std::string name(b.begin(),std::find(b.begin(),b.begin()+3,0));
+                U start=le(b.data()+3),len=unsigned(b[7])|(unsigned(b[8])<<8);
+                bounds(start,len,a.size);
+                if(name.empty()||len<3)throw std::runtime_error("Invalid FSU sprite entry");
+                sprites.push_back({a.backing,a.name+"::"+group+"/"+name,"FSU-SPRITE",a.offset+start,len,true});
+            }
+        }
+        out.fsu_resources+=static_cast<std::size_t>(count);
+        out.fsu_sprites+=sprites.size();
+        for(auto& a:sprites)add(out,std::move(a));
+        ++out.fsu_archives;
+    } catch(const std::exception& e){out.warnings.push_back(a.name+": "+e.what());}
+}
 static void source_asset(Inventory& out, Asset a) {
     add(out,a);
     if (a.format=="FS") inspect_fs(out,a);
+    else if(a.format=="FSU") inspect_fsu(out,a);
 }
 static void scan_iso(Inventory& out, const fs::path& path) {
     Reader r(path);
@@ -177,10 +220,10 @@ Inventory scan(const fs::path& source) {
         if (format(n)=="ISO") {
             out.source_kind="ISO 9660";
             scan_iso(out,root);
-        } else if (format(n)=="FS") {
-            out.source_kind="FS archive";
-            source_asset(out,{root,n,"FS",0,fs::file_size(root),false});
-        } else throw std::runtime_error("Choose a directory, .iso or .fs file");
+        } else if (format(n)=="FS" || format(n)=="FSU") {
+            out.source_kind=format(n)+" archive";
+            source_asset(out,{root,n,format(n),0,fs::file_size(root),false});
+        } else throw std::runtime_error("Choose a directory, .iso, .fs or .fsu file");
     } else throw std::runtime_error("Unsupported source");
     std::stable_sort(out.assets.begin(),out.assets.end(),[](const Asset& a,const Asset& b){return a.name<b.name;});
     return out;
