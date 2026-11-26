@@ -1078,7 +1078,7 @@ class Frame final : public wxFrame {
                                     auto mid=read_media(media.dir/"music.mid",64u*1024u*1024u);sc::validate_midi(mid);
                                     derived.emplace_back("music.mid",std::move(mid));status="converted";detail="XMIDI to SMF using Reloaded converter (no instrument remap)";payload=base+"music.mid";
                                 }else if(auto context=sc::fsu_context(a,data)){
-                                    add_text("fsu-context.json",*context);status="converted";detail="Explicit supplied FSA fire origins and centers";payload=base+"fsu-context.json";
+                                    add_text("fsu-context.json",*context);status="converted";detail="Editor-supplied FSA fire origins and centers; original DOS parity unverified";payload=base+"fsu-context.json";
                                 }else if(auto unit_json=sc::unit_definitions(a,data)){
                                     add_text("units.json",*unit_json);status="converted";detail="Unit fields and exact original record hex";payload=base+"units.json";
                                 }else if(auto map=sc::tactical_map(a,data)){
@@ -1666,7 +1666,7 @@ public:
         Bind(wxEVT_MENU,[this](wxCommandEvent&){analyze();},scan_id);
         Bind(wxEVT_MENU,[this](wxCommandEvent&){export_manifest();},save_manifest);
         Bind(wxEVT_MENU,[this](wxCommandEvent&){Close();},wxID_EXIT);
-        Bind(wxEVT_MENU,[this](wxCommandEvent&){wxMessageBox("Spellcross Asset Converter 0.9.14\nPart of Spellcross Reloaded\nMIT license\nCopyright (c) 2026 Luboš Horák\nSpellcross Reloaded by Luboš Horák; foundations by Stanislav Mašláň.\nhttps://github.com/luboshorak/spellcross-reloaded\nCAN decoder: CPAL-1.0; libsmacker: LGPL-2.1-or-later.","About",wxOK|wxICON_INFORMATION,this);},wxID_ABOUT);
+        Bind(wxEVT_MENU,[this](wxCommandEvent&){wxMessageBox("Spellcross Asset Converter 0.9.14.1\nPart of Spellcross Reloaded\nMIT license\nCopyright (c) 2026 Luboš Horák\nSpellcross Reloaded by Luboš Horák; foundations by Stanislav Mašláň.\nhttps://github.com/luboshorak/spellcross-reloaded\nCAN decoder: CPAL-1.0; libsmacker: LGPL-2.1-or-later.","About",wxOK|wxICON_INFORMATION,this);},wxID_ABOUT);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){choose(true);},open_dir);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){choose(false);},open_file);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){analyze();},scan_id);
