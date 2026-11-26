@@ -192,6 +192,29 @@ int main(){
         sc::Asset terrain;terrain.name="T11.FS::SLOPE.DTA";terrain.member=true;terrain.format="DTA";
         auto tile_image=sc::decode_image(terrain,tile);
         require(tile_image&&tile_image->width==80&&tile_image->y==-1&&tile_image->opaque[2]==0&&tile_image->indices[3]==1);
+        // Real terrain scanlines are aligned to four-pixel blocks.
+        // x=79, one visible pixel and three transparent pad pixels.
+        B padded{2,0,2,0,0xff,0xff,0xff,0xff,
+                 79,0,1,0,9,0,0,0,
+                 79,0,0,1,7,0,0,0,0,255,255,255};
+        auto padded_tile=sc::decode_image(terrain,padded);
+        require(padded_tile&&padded_tile->width==80&&padded_tile->height==2&&
+                padded_tile->indices[79]==9&&padded_tile->indices[159]==7&&
+                padded_tile->opaque[78]==0&&padded_tile->opaque[158]==0);
+        auto invalid_pad=padded;invalid_pad[13]=5;
+        bool rejected_pad=false;try{sc::decode_image(terrain,invalid_pad);}catch(const std::exception&){rejected_pad=true;}require(rejected_pad);
+        invalid_pad=padded;invalid_pad.back()=0;
+        rejected_pad=false;try{sc::decode_image(terrain,invalid_pad);}catch(const std::exception&){rejected_pad=true;}require(rejected_pad);
+        invalid_pad=padded;invalid_pad.pop_back();
+        rejected_pad=false;try{sc::decode_image(terrain,invalid_pad);}catch(const std::exception&){rejected_pad=true;}require(rejected_pad);
+        // Same decode path for nested ANM frame.
+        B padded_anm(5+padded.size());padded_anm[0]=1;le(padded_anm,1,4);
+        std::copy(padded.begin(),padded.end(),padded_anm.begin()+5);
+        write(t.p/"PADDED.ANM",padded_anm);
+        sc::Asset pad_anim{t.p/"PADDED.ANM","PADDED.ANM","ANM",0,padded_anm.size(),false};
+        auto pad_steps=sc::layer_children(pad_anim,{});
+        auto pad_frame=sc::layer_image(pad_anim,{pad_steps.at(0)},sc::layer_bytes(pad_anim,{pad_steps.at(0)}));
+        require(pad_frame&&pad_frame->indices==padded_tile->indices&&pad_frame->opaque==padded_tile->opaque);
         B anm(5+tile.size());anm[0]=1;le(anm,1,4);std::copy(tile.begin(),tile.end(),anm.begin()+5);write(t.p/"TILE.ANM",anm);
         sc::Asset anim2{t.p/"TILE.ANM","TILE.ANM","ANM",0,anm.size(),false};
         auto layers=sc::layer_children(anim2,{});require(layers.size()==1&&layers[0].format=="ANM-FRAME");
