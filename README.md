@@ -178,3 +178,12 @@ Convert strategic SSD adjacency, gamma tables, terrain color indices, INFO norma
 ## 0.9.12.2 — global resource catalog
 
 Full and partial modern exports now include `resources.json`, declared by the root manifest. It is reconstructed from validated PAK manifests and checked again from disk. Exact stable IDs identify package owners, original ranges, primary payloads, optional fallback entries and atlas frames. Full-name and leaf-name indexes retain all collisions, and whole atlas group indexes support lookup of unit graphics. Existing package layout, IDs, payloads and v1 status values are unchanged. Standalone validation verifies declared catalogs or reconstructs one for older datasets without modifying them. See docs/PAK-v1.md for the lookup contract. This is an ownership/indexing milestone, not proof of resolved gameplay links. No SR or Build.ps1 changes.
+
+## 0.9.14 — combined game metadata and reference validation (0.9.13 + 0.9.14)
+
+- Edition-aware unit fields plus known flag semantics and explicitly unmapped bytes; compare mapped values against embedded original record bytes. Optional supplied units.fsa fire origins/centers are parsed and checked against FSU shape (retail ISO does not supply these coordinates; no invented defaults).
+- Validate actual ground/object tile indices on PAK read-back, preserve and inspect eight-layer map metadata, and resolve scoped terrain, animation and sound resources.
+- Build ordered campaign/research/formation/upgrade/commander/music metadata with repeated commands preserved, typed arguments and distinct OR/ALL prerequisite semantics. Audit known unit, class, map, mission, territory, event, research, upgrade, audiovisual, text and tutorial references across package boundaries.
+- New `game-metadata.json` (declared by root, verified on read-back) and `game-references.tsv` report exact source fields and candidate locators; classify resolved, optional, placeholder, missing, ambiguous, partial-selection, unsupported and shape/frame-review outcomes. Unknown commands and absent FSA context remain visible. Legacy v1 datasets can be audited without modifying them.
+
+The combined milestones are implemented as a reviewable first pass. Full retail export and reference audits, original animation timing, absent fire-origin coordinates, uncertain gameplay fields, font/terrain semantics and unreviewed commands still need confirmation. Do not equate reference resolution with gameplay parity. No SR or Build.ps1 changes. See docs/PAK-v1.md for the contract.

@@ -862,6 +862,13 @@ class Frame final : public wxFrame {
         }else{
             report.summary.insert(report.summary.find("\n\n",report.summary.find("Source inventory match:")),"\nResource catalog: not declared (older dataset); reconstructed for audit");
         }
+        if(has_game_metadata(root)){
+            const auto metadata_path=dir/"game-metadata.json";
+            if(expected_source)write_manifest_file(metadata_path,report.game_metadata_json);
+            auto stored=read_media(metadata_path,64u*1024u*1024u);
+            validate_game_metadata(std::string_view(reinterpret_cast<const char*>(stored.data()),stored.size()),report.game_metadata_json);
+            report.summary.insert(report.summary.find("\n\n",report.summary.find("Source inventory match:")),"\nGame metadata: verified against package payloads");
+        }else report.summary.insert(report.summary.find("\n\n",report.summary.find("Source inventory match:")),"\nGame metadata: reconstructed from older dataset for audit");
         return report;
     }
     void validate_pak(){
@@ -882,6 +889,8 @@ class Frame final : public wxFrame {
                         write_manifest_file(dest/"pak-audit.txt",result.summary);
                         write_manifest_file(dest/"pak-audit.tsv",result.records_tsv);
                         write_manifest_file(dest/"resources.json",result.catalog_json);
+                        write_manifest_file(dest/"game-metadata.json",result.game_metadata_json);
+                        write_manifest_file(dest/"game-references.tsv",result.references_tsv);
                         log("PAK audit saved: "+w(sc::utf8(dest)));
                     }catch(...){std::error_code ec;std::filesystem::remove_all(dest,ec);throw;}
                 }
@@ -925,7 +934,7 @@ class Frame final : public wxFrame {
             std::map<std::string,std::map<std::string,std::size_t>> coverage;
             std::vector<std::pair<std::size_t,std::string>> unresolved;
             std::ostringstream root;root<<"{\n\"schema\":\"spellcross-dataset\",\"version\":1,\"partial\":"<<(partial?"true":"false")
-                <<",\"runtime_ready\":false,\"resource_catalog\":\"resources.json\",\"source_kind\":"<<json(inv.source_kind)
+                <<",\"runtime_ready\":false,\"resource_catalog\":\"resources.json\",\"game_metadata\":\"game-metadata.json\",\"source_kind\":"<<json(inv.source_kind)
                 <<",\"edition_language\":"<<json(edition)
                 <<",\"encoding_setting\":"<<json(std::string(encoding_choice->GetStringSelection().utf8_str().data()))
                 <<",\"scan_warnings\":[";
@@ -1068,6 +1077,8 @@ class Frame final : public wxFrame {
                                     run_media(sibling_executable("sc_xmidi_worker"),media.dir,{"source.xmi","music.mid"});
                                     auto mid=read_media(media.dir/"music.mid",64u*1024u*1024u);sc::validate_midi(mid);
                                     derived.emplace_back("music.mid",std::move(mid));status="converted";detail="XMIDI to SMF using Reloaded converter (no instrument remap)";payload=base+"music.mid";
+                                }else if(auto context=sc::fsu_context(a,data)){
+                                    add_text("fsu-context.json",*context);status="converted";detail="Explicit supplied FSA fire origins and centers";payload=base+"fsu-context.json";
                                 }else if(auto unit_json=sc::unit_definitions(a,data)){
                                     add_text("units.json",*unit_json);status="converted";detail="Unit fields and exact original record hex";payload=base+"units.json";
                                 }else if(auto map=sc::tactical_map(a,data)){
@@ -1260,6 +1271,7 @@ class Frame final : public wxFrame {
             log(w(timings.str()));
             write_manifest_file(dest/"pak-audit.txt",verified.summary);
             write_manifest_file(dest/"pak-audit.tsv",verified.records_tsv);
+            write_manifest_file(dest/"game-references.tsv",verified.references_tsv);
             validation->ChangeValue(w(verified.summary));log(w(verified.summary));
             // One small optional diagnostic archive, not part of the PAK dataset.
             // Avoid large media copies; retain an explicit index of omitted assets.
@@ -1288,7 +1300,7 @@ class Frame final : public wxFrame {
             progress.Update(static_cast<int>(total));
             auto summary=number(packages.size())+" PAK packages\n"+number(converted)+" converted, "+number(decoded)+" decoded, "+number(raw)+" raw, "+number(failed)+" failed, "+number(containers)+" original containers.\n"+
                 number(frames)+" atlas frames / "+number(pages)+" pages; "+number(png_total)+" PNG bytes.\n"+
-                "Draft data format; resources.json is the verified resource catalog. See pak-audit.txt and pak-audit.tsv for remaining work.\n"+w(sc::utf8(dest));
+                "Draft data format; see game-metadata.json, game-references.tsv and pak-audit.txt for reference coverage and remaining work.\n"+w(sc::utf8(dest));
             log(summary);wxMessageBox(summary,"Modern conversion finished",wxOK|wxICON_INFORMATION,this);
         }catch(const std::exception& e){
             if(!dest.empty()){std::error_code ec;std::filesystem::remove_all(dest,ec);if(ec)log("ERROR: Could not remove incomplete PAK output");}
@@ -1654,7 +1666,7 @@ public:
         Bind(wxEVT_MENU,[this](wxCommandEvent&){analyze();},scan_id);
         Bind(wxEVT_MENU,[this](wxCommandEvent&){export_manifest();},save_manifest);
         Bind(wxEVT_MENU,[this](wxCommandEvent&){Close();},wxID_EXIT);
-        Bind(wxEVT_MENU,[this](wxCommandEvent&){wxMessageBox("Spellcross Asset Converter 0.9.12.2\nPart of Spellcross Reloaded\nMIT license\nCopyright (c) 2026 Luboš Horák\nSpellcross Reloaded by Luboš Horák; foundations by Stanislav Mašláň.\nhttps://github.com/luboshorak/spellcross-reloaded\nCAN decoder: CPAL-1.0; libsmacker: LGPL-2.1-or-later.","About",wxOK|wxICON_INFORMATION,this);},wxID_ABOUT);
+        Bind(wxEVT_MENU,[this](wxCommandEvent&){wxMessageBox("Spellcross Asset Converter 0.9.14\nPart of Spellcross Reloaded\nMIT license\nCopyright (c) 2026 Luboš Horák\nSpellcross Reloaded by Luboš Horák; foundations by Stanislav Mašláň.\nhttps://github.com/luboshorak/spellcross-reloaded\nCAN decoder: CPAL-1.0; libsmacker: LGPL-2.1-or-later.","About",wxOK|wxICON_INFORMATION,this);},wxID_ABOUT);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){choose(true);},open_dir);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){choose(false);},open_file);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){analyze();},scan_id);

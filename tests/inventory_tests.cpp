@@ -307,6 +307,100 @@ int main(){
         require(sc::music_kind(xmi)==sc::MusicKind::xmidi);sc::validate_xmidi(xmi);
         xmi[19]=99;bool bad_xmi=false;try{sc::validate_xmidi(xmi);}catch(const std::exception&){bad_xmi=true;}require(bad_xmi);
         using namespace sc::validation;
+        {
+            // Validate actual embedded unit bytes, not just JSON field names.
+            Entries unit_entries;
+            unit_entries["original.bin"].size=units_data.size();
+            unit_entries["records/1/units.json"].json=*units_json;
+            unit_entries["records/1/units.json"].size=units_json->size();
+            unit_entries["manifest.json"].json=R"({"schema":"spellcross-pak","version":1,"category":"common","partial":false,"records":[{"id":"units#1","name":"COMMON.FS::JEDNOTKY.DEF","format":"DEF","status":"converted","original":{"entry":"original.bin","offset":0,"size":207},"payload":"records/1/units.json"}],"graphics":[],"palettes":[]})";
+            auto unit_summary=validate_package(unit_entries,"common");
+            require(unit_summary.metadata_coverage.at("unit-types")==1&&unit_summary.metadata_coverage.at("unit-types-with-explicit-flags")==1);
+            require(unit_summary.definitions.size()==1&&unit_summary.definitions[0].ids==std::vector<std::string>{"0"});
+            auto& bad_unit=unit_entries["records/1/units.json"].json;
+            auto at=bad_unit.find("\"shot_ap\":7");require(at!=std::string::npos);
+            bad_unit.replace(at,std::string("\"shot_ap\":7").size(),"\"shot_ap\":8");
+            bool bad_unit_rejected=false;try{validate_package(unit_entries,"common");}catch(const std::exception&){bad_unit_rejected=true;}require(bad_unit_rejected);
+
+            // FSA auxiliary metadata: exact signed coordinates and bounds.
+            sc::Asset fsa_asset;fsa_asset.name="units.fsa";fsa_asset.format="FSA";
+            const std::string magic="SpellFSUcontextV1.0";
+            B fsa(magic.begin(),magic.end());fsa.push_back(0);
+            auto add32=[&](std::uint32_t n){auto p=fsa.size();fsa.resize(p+4);le(fsa,p,n);};
+            add32(1);fsa.push_back(4);fsa.push_back(0);fsa.insert(fsa.end(),{'T','E','S','T'});
+            add32(1);add32(1);add32(0xfffffffeu);add32(3);add32(4);add32(5);
+            add32(0);add32(6);add32(7);
+            auto context_json=sc::fsu_context(fsa_asset,fsa);
+            require(context_json&&context_json->find("[-2,3]")!=std::string::npos);
+            Entries fsa_entries;
+            fsa_entries["original.bin"].size=fsa.size();
+            fsa_entries["records/1/fsu-context.json"].json=*context_json;
+            fsa_entries["records/1/fsu-context.json"].size=context_json->size();
+            fsa_entries["manifest.json"].json="{\"schema\":\"spellcross-pak\",\"version\":1,\"category\":\"other\",\"partial\":false,\"records\":[{\"id\":\"fsa#1\",\"name\":\"units.fsa\",\"format\":\"FSA\",\"status\":\"converted\",\"original\":{\"entry\":\"original.bin\",\"offset\":0,\"size\":"+std::to_string(fsa.size())+"},\"payload\":\"records/1/fsu-context.json\"}],\"graphics\":[],\"palettes\":[]}";
+            auto fsa_summary=validate_package(fsa_entries,"other");
+            require(fsa_summary.fsu_contexts.size()==1&&fsa_summary.fsu_contexts[0].static_azimuths==std::vector<std::uint64_t>{1});
+            fsa.pop_back();bool truncated_fsa=false;try{sc::fsu_context(fsa_asset,fsa);}catch(const std::exception&){truncated_fsa=true;}require(truncated_fsa);
+
+            // Map tile plane indices are actually validated on read-back.
+            Entries map_entries;
+            map_entries["original.bin"].size=map_data.size();
+            map_entries["records/1/map.json"].json=modern_map->metadata;
+            map_entries["records/1/map.json"].size=modern_map->metadata.size();
+            map_entries["records/1/ground.u16le"].size=modern_map->ground.size();
+            map_entries["records/1/ground.u16le"].tile_bytes=modern_map->ground;
+            map_entries["records/1/objects.u8x2"].size=modern_map->objects.size();
+            map_entries["records/1/objects.u8x2"].tile_bytes=modern_map->objects;
+            map_entries["manifest.json"].json="{\"schema\":\"spellcross-pak\",\"version\":1,\"category\":\"common\",\"partial\":false,\"records\":[{\"id\":\"map#1\",\"name\":\"COMMON.FS::M01_01.DTA\",\"format\":\"DTA\",\"status\":\"converted\",\"original\":{\"entry\":\"original.bin\",\"offset\":0,\"size\":"+std::to_string(map_data.size())+"},\"payload\":\"records/1/map.json\"}],\"graphics\":[],\"palettes\":[]}";
+            auto map_summary=validate_package(map_entries,"common");
+            require(map_summary.game_references.size()==1&&map_summary.game_references[0].target=="TILE"&&map_summary.game_references[0].scope=="T11.FS");
+            map_entries["records/1/ground.u16le"].tile_bytes[0]=1;
+            bool invalid_tile=false;try{validate_package(map_entries,"common");}catch(const std::exception&){invalid_tile=true;}require(invalid_tile);
+
+            // Genuine cross-package resolution, not just a synthetic name list.
+            Entries terrain_entries;
+            terrain_entries["original.bin"].size=4;
+            terrain_entries["palette.rgb"].size=768;terrain_entries["palette.known"].size=256;
+            terrain_entries["i.png"]={12,1,1,{}};terrain_entries["m.png"]={12,1,1,{}};
+            terrain_entries["manifest.json"].json=R"({"schema":"spellcross-pak","version":1,"category":"terrain","partial":false,"records":[{"id":"tile#1","name":"T11.FS::TILE.DTA","format":"DTA","status":"converted","original":{"entry":"original.bin","offset":0,"size":4},"payload":"frames.json"}],"graphics":["frames.json"],"palettes":[{"rgb":"palette.rgb","known":"palette.known"}]})";
+            terrain_entries["frames.json"].json=R"({"schema":"spellcross-atlas","version":1,"group":"T11.FS","pages":[{"indices":"i.png","opacity":"m.png"}],"frames":[{"id":"tile#1","frame":0,"page":0,"rect":[0,0,1,1],"origin":[0,0],"palette":0}]})";
+            auto terrain_summary=validate_package(terrain_entries,"terrain");
+            const auto map_root=R"({"schema":"spellcross-dataset","version":1,"partial":false,"runtime_ready":false,"game_metadata":"game-metadata.json","packages":[{"file":"common.pak","category":"common","records":1,"converted":1,"decoded":0,"raw":0,"failed":0,"containers":0},{"file":"terrain.pak","category":"terrain","records":1,"converted":1,"decoded":0,"raw":0,"failed":0,"containers":0}],"coverage_by_format":{"common/DTA":{"converted":1},"terrain/DTA":{"converted":1}},"atlas_metrics":{"frames":1,"pages":1,"source_pixels":1,"png_bytes":24}})";
+            std::map<std::string,PackageSummary> linked{{"common.pak",map_summary},{"terrain.pak",terrain_summary}};
+            require(has_game_metadata(map_root));
+            auto linked_report=audit_report(map_root,linked);
+            require(linked_report.references_tsv.find("TILE\tresolved\t1\tterrain.pak::tile#1::frames.json")!=std::string::npos);
+            validate_game_metadata(" \n"+linked_report.game_metadata_json,linked_report.game_metadata_json);
+            auto changed_metadata=linked_report.game_metadata_json;
+            auto found=changed_metadata.find("\"result\":\"resolved\"");require(found!=std::string::npos);
+            changed_metadata.replace(found,std::string("\"result\":\"resolved\"").size(),"\"result\":\"missing\"");
+            bool stale_metadata=false;try{validate_game_metadata(changed_metadata,linked_report.game_metadata_json);}catch(const std::exception&){stale_metadata=true;}require(stale_metadata);
+            linked["common.pak"].game_references.push_back({"map#1","objects.sprites[0]","terrain-sprite","TILE","PUST.FS"});
+            linked["common.pak"].game_references.push_back({"map#1","optional","pnm","#","T11.FS"});
+            auto missing_report=audit_report(map_root,linked);
+            require(missing_report.references_tsv.find("TILE\tmissing\t0")!=std::string::npos&&missing_report.references_tsv.find("#\toptional-empty\t0")!=std::string::npos);
+            auto partial_root=std::string(map_root);partial_root.replace(partial_root.find("\"partial\":false"),15,"\"partial\":true");
+            auto partial_report=audit_report(partial_root,linked);
+            require(partial_report.references_tsv.find("TILE\tnot-in-selection\t0")!=std::string::npos);
+            linked["terrain.pak"].audit_records[0].assessment="placeholder";
+            auto placeholder_report=audit_report(map_root,linked);
+            require(placeholder_report.references_tsv.find("TILE\tplaceholder\t1")!=std::string::npos);
+            linked["common.pak"].definitions.push_back({"map#1","unit",{"1","1"}});
+            linked["common.pak"].game_references.push_back({"map#1","ambiguous unit","definition","1","unit"});
+            auto ambiguous_report=audit_report(map_root,linked);
+            require(ambiguous_report.references_tsv.find("1\tambiguous\t2")!=std::string::npos);
+
+            // Ordered research metadata keeps repeated OR prerequisites.
+            Entries research_entries;
+            research_entries["original.bin"].size=100;
+            research_entries["records/1/script.json"].json=*script_json;
+            research_entries["records/1/script.json"].size=script_json->size();
+            research_entries["manifest.json"].json=R"({"schema":"spellcross-pak","version":1,"category":"common","partial":false,"records":[{"id":"research#1","name":"COMMON.FS::RESEARCH.DEF","format":"DEF","status":"converted","original":{"entry":"original.bin","offset":0,"size":100},"payload":"records/1/script.json"}],"graphics":[],"palettes":[]})";
+            auto research_summary=validate_package(research_entries,"common");
+            require(research_summary.game_blocks.size()==1&&research_summary.game_blocks[0].commands.size()==3);
+            require(research_summary.game_references.size()==2&&research_summary.game_references[0].target=="77"&&research_summary.game_references[1].target=="124");
+            require(research_summary.unreviewed_commands.at("research:FUTURECALL")==1);
+            require(research_summary.definitions[0].ids==std::vector<std::string>{"6"});
+        }
         require(safe_entry("graphics/1/page.png")&&!safe_entry("../bad")&&!safe_entry("C:/bad"));
         const unsigned char crc_test[]="123456789";require((crc32_update(0xffffffffu,crc_test,9)^0xffffffffu)==0xcbf43926u);
         Entries entries;
