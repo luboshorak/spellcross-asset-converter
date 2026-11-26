@@ -29,6 +29,19 @@ std::optional<Sprite> decode_image(const Asset&,std::span<const std::uint8_t>);
 bool compressed(const Asset&);
 bool is_text_asset(const Asset&,std::span<const std::uint8_t>);
 std::string block_name(const Asset&);
+// Virtual browser nodes: only a bounded decode/slice recipe is retained,
+// never a permanent copy of each decompressed asset.
+struct LayerStep {
+    bool decompress{};
+    std::size_t offset{},size{};
+    std::string label,format,name;
+};
+using LayerPath=std::vector<LayerStep>;
+bool can_expand(const Asset&,const LayerPath&);
+Bytes layer_bytes(const Asset&,const LayerPath&,std::size_t limit=64*1024*1024);
+std::vector<LayerStep> layer_children(const Asset&,const LayerPath&);
+std::optional<Sprite> layer_image(const Asset&,const LayerPath&,std::span<const std::uint8_t>);
+bool layer_text(const Asset&,const LayerPath&,std::span<const std::uint8_t>);
 // Sidecar metadata for lossless sprite reconstruction. The index and mask
 // images store original values independently of the presentation palette.
 std::string sprite_metadata(const Asset&, const Sprite&, const Palette&);

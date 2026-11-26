@@ -48,7 +48,9 @@ enum {open_dir=wxID_HIGHEST+1,open_file,scan_id,export_one,export_all,save_manif
 class ItemData final:public wxTreeItemData {
 public:
     std::size_t index;
-    explicit ItemData(std::size_t i):index(i){}
+    sc::LayerPath layers;
+    bool loaded=false;
+    explicit ItemData(std::size_t i,sc::LayerPath p={}):index(i),layers(std::move(p)){}
 };
 class Canvas final:public wxScrolledWindow {
     wxImage image;
@@ -277,7 +279,9 @@ class Frame final : public wxFrame {
                 if(end==std::string::npos){
                     // Retain duplicate records as separate items.
                     if(tree->GetItemData(parent))parent=tree->AppendItem(tree->GetItemParent(parent),w(part+" [duplicate]"));
-                    tree->SetItemData(parent,new ItemData(i));nodes[i]=parent;++visible;break;
+                    tree->SetItemData(parent,new ItemData(i));nodes[i]=parent;++visible;
+                    if(sc::can_expand(a,{}))tree->SetItemHasChildren(parent,true);
+                    break;
                 }
                 from=end+1;
             }
@@ -285,7 +289,7 @@ class Frame final : public wxFrame {
         tree->Expand(root);
         if(!needle.empty()||type!="All assets"){
             // Expand matching branches, without expanding an unfiltered full inventory.
-            for(auto& [key,item]:folders)if(tree->ItemHasChildren(item))tree->Expand(item);
+            for(auto& [key,item]:folders)if(tree->GetChildrenCount(item,false)>0)tree->Expand(item);
         }
         if(old&&*old<nodes.size()&&nodes[*old].IsOk()){tree->SelectItem(nodes[*old]);tree->EnsureVisible(nodes[*old]);}
         tree->Thaw();rebuilding=false;
@@ -293,11 +297,36 @@ class Frame final : public wxFrame {
         all_button->Enable(std::any_of(inv.assets.begin(),inv.assets.end(),[](const auto& a){return a.member;}));
         show_preview();
     }
+    ItemData* selected_data(){
+        auto item=tree->GetSelection();
+        return item.IsOk()?dynamic_cast<ItemData*>(tree->GetItemData(item)):nullptr;
+    }
+    void expand_layer(wxTreeItemId item){
+        if(rebuilding||!item.IsOk())return;
+        auto* node=dynamic_cast<ItemData*>(tree->GetItemData(item));
+        if(!node||node->loaded||node->index>=inv.assets.size())return;
+        const auto& a=inv.assets[node->index];
+        if(!sc::can_expand(a,node->layers))return;
+        node->loaded=true;
+        try{
+            auto children=sc::layer_children(a,node->layers);
+            for(auto& child:children){
+                auto chain=node->layers;chain.push_back(child);
+                auto id=tree->AppendItem(item,w(child.label)+" ("+number(child.size)+" B)",-1,-1,new ItemData(node->index,std::move(chain)));
+                auto* added=static_cast<ItemData*>(tree->GetItemData(id));
+                if(sc::can_expand(a,added->layers))tree->SetItemHasChildren(id,true);
+            }
+            if(children.empty())tree->SetItemHasChildren(item,false);
+        }catch(const std::exception& e){
+            tree->AppendItem(item,"Cannot expand: "+w(e.what()));
+            log("EXPANSION: "+w(a.name)+": "+w(e.what()));
+        }
+    }
     const sc::Asset* selected(){
         auto item=tree->GetSelection();
         if(!item.IsOk())return nullptr;
         auto* data=dynamic_cast<ItemData*>(tree->GetItemData(item));
-        return data&&data->index<inv.assets.size()?&inv.assets[data->index]:nullptr;
+        return data&&data->layers.empty()&&data->index<inv.assets.size()?&inv.assets[data->index]:nullptr;
     }
     wxString hex(const sc::Bytes& data){
         std::ostringstream o;o<<std::hex<<std::setfill('0');
@@ -310,8 +339,35 @@ class Frame final : public wxFrame {
             o<<"|\n";
         }return w(o.str());
     }
+    void show_layer(const ItemData& node){
+        active.reset();stop_play();sequence.clear();sequence_pos=0;
+        prev_button->Enable(false);next_button->Enable(false);play_button->Enable(false);
+        png_button->Enable(false);group_button->Enable(false);export_button->Enable(false);decoded_button->Enable(false);
+        graphic->SetImage(wxImage());preview_box->Clear();raw_hex->Clear();metadata->Clear();text_view->Clear();
+        const auto& a=inv.assets[node.index];
+        const auto& last=node.layers.back();
+        selected_label->SetLabel(w(a.name)+" / "+w(last.label));
+        wxString details="Original: "+w(a.name)+"\n";
+        for(auto& layer:node.layers)details+=" -> "+w(layer.label)+" | "+w(layer.format)+" | "+number(layer.size)+" bytes\n";
+        try{
+            auto data=sc::layer_bytes(a,node.layers);raw_hex->SetValue(hex(data));preview_box->SetValue(hex(data));decoded_button->Enable(true);
+            if(auto image=sc::layer_image(a,node.layers,data)){
+                if(image->height>0){graphic->SetImage(sprite_image(*image,sc::asset_palette(inv,a,palette)));preview_tabs->SetSelection(0);}
+                details+="\nImage: "+number(image->width)+" x "+number(image->height);
+            }else if(last.format=="PAL"&&data.size()>=3&&data.size()<=768&&data.size()%3==0){
+                int n=static_cast<int>(data.size()/3);wxImage image(256,((n+15)/16)*16);
+                image.SetRGB(wxRect(0,0,image.GetWidth(),image.GetHeight()),36,47,35);
+                for(int i=0;i<n;++i)image.SetRGB(wxRect(i%16*16,i/16*16,16,16),data[i*3],data[i*3+1],data[i*3+2]);
+                graphic->SetImage(image);preview_tabs->SetSelection(0);
+            }else if(sc::layer_text(a,node.layers,data)){
+                text_view->SetValue(decode_text(data));preview_tabs->SetSelection(4);
+            }else preview_tabs->SetSelection(2);
+        }catch(const std::exception& e){details+="\nERROR: "+w(e.what());log("LAYER: "+w(e.what()));preview_tabs->SetSelection(3);}
+        metadata->SetValue(details);
+    }
     void show_preview(){
         if(rebuilding)return;
+        if(auto* node=selected_data();node&&!node->layers.empty()&&node->index<inv.assets.size()){show_layer(*node);return;}
         auto* a=selected();
         active=a?std::optional<std::size_t>(a-inv.assets.data()):std::nullopt;
         export_button->Enable(a!=nullptr);
@@ -392,14 +448,15 @@ class Frame final : public wxFrame {
         }catch(const std::exception& e){log("ERROR: "+w(e.what()));wxMessageBox(w(e.what()),"Export failed",wxOK|wxICON_ERROR,this);}
     }
     void export_decoded(){
-        stop_play();auto* a=selected();if(!a)return;
+        stop_play();auto* node=selected_data();if(!node||node->index>=inv.assets.size())return;
+        const auto a=inv.assets[node->index];const auto layers=node->layers;
         wxDirDialog d(this,"Choose folder for decoded data");
         if(d.ShowModal()!=wxID_OK)return;
         try{
-            auto data=sc::decode_asset(*a);
+            auto data=layers.empty()?sc::decode_asset(a):sc::layer_bytes(a,layers);
             auto dest=fresh_dir(path(d.GetPath()),"Spellcross-decoded-");
             write_bytes(dest/"decoded.bin",data);
-            write_bytes(dest/"original.bin",sc::preview(*a,static_cast<std::size_t>(a->size)));
+            write_bytes(dest/"original.bin",sc::preview(a,static_cast<std::size_t>(a.size)));
             log("Decoded data exported: "+w(sc::utf8(dest)));
             wxMessageBox(w(sc::utf8(dest)),"Decoded export",wxOK|wxICON_INFORMATION,this);
         }catch(const std::exception& e){log("ERROR: "+w(e.what()));wxMessageBox(w(e.what()),"Export failed",wxOK|wxICON_ERROR,this);}
@@ -580,7 +637,7 @@ public:
         auto* root=new wxBoxSizer(wxVERTICAL);SetSizer(root);
         auto* header=new wxPanel(this);paint(header,false);auto* hs=new wxBoxSizer(wxVERTICAL);header->SetSizer(hs);
         label(header,hs,"SPELLCROSS  /  ASSET CONVERTER",true);
-        label(header,hs,"RELOADED TOOLKIT   |   v0.4.0   |   Original data inventory");
+        label(header,hs,"RELOADED TOOLKIT   |   v0.4.1   |   Original data inventory");
         root->Add(header,0,wxEXPAND);
         tabs=new wxNotebook(this,wxID_ANY);root->Add(tabs,1,wxALL|wxEXPAND,10);
         wxBoxSizer* s;
@@ -654,7 +711,7 @@ public:
         Bind(wxEVT_MENU,[this](wxCommandEvent&){analyze();},scan_id);
         Bind(wxEVT_MENU,[this](wxCommandEvent&){export_manifest();},save_manifest);
         Bind(wxEVT_MENU,[this](wxCommandEvent&){Close();},wxID_EXIT);
-        Bind(wxEVT_MENU,[this](wxCommandEvent&){wxMessageBox("Spellcross Asset Converter 0.4.0\nPart of Spellcross Reloaded\nMIT license\nFS format based on Stanislav Maslan's restoration tools.","About",wxOK|wxICON_INFORMATION,this);},wxID_ABOUT);
+        Bind(wxEVT_MENU,[this](wxCommandEvent&){wxMessageBox("Spellcross Asset Converter 0.4.1\nPart of Spellcross Reloaded\nMIT license\nFS format based on Stanislav Maslan's restoration tools.","About",wxOK|wxICON_INFORMATION,this);},wxID_ABOUT);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){choose(true);},open_dir);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){choose(false);},open_file);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){analyze();},scan_id);
@@ -664,6 +721,7 @@ public:
         filter->Bind(wxEVT_TEXT,[this](wxCommandEvent&){refresh();});
         kind->Bind(wxEVT_CHOICE,[this](wxCommandEvent&){refresh();});
         tree->Bind(wxEVT_TREE_SEL_CHANGED,[this](wxTreeEvent&){show_preview();});
+        tree->Bind(wxEVT_TREE_ITEM_EXPANDING,[this](wxTreeEvent& e){expand_layer(e.GetItem());e.Skip();});
         tree->Bind(wxEVT_KEY_DOWN,[this](wxKeyEvent& e){
             if(e.GetKeyCode()==WXK_PAGEUP)step(-1);
             else if(e.GetKeyCode()==WXK_PAGEDOWN)step(1);

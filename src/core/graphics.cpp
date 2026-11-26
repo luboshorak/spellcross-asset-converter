@@ -187,7 +187,7 @@ std::optional<Sprite> decode_image(const Asset& a,std::span<const std::uint8_t> 
            std::uint64_t(s.width)*s.height>16000000)throw std::runtime_error("Invalid image dimensions");
         s.indices.resize(std::size_t(s.width)*s.height);s.opaque.resize(s.indices.size());
     };
-    if(a.format=="ICO"||a.format=="BTN"){
+    if(a.format=="ICO"||a.format=="BTN"||a.format=="PNM-FRAME"){
         if(d.size()<7)throw std::runtime_error("Truncated ICO header");
         s.y=int(u16(0));if(s.y>=32768)s.y-=65536;
         s.x=int(u16(2));s.width=int(u16(4));s.height=d[6];allocate();
@@ -200,7 +200,7 @@ std::optional<Sprite> decode_image(const Asset& a,std::span<const std::uint8_t> 
                 if(d.size()-p<2)throw std::runtime_error("Truncated ICO chunk");
                 x+=d[p++];unsigned n=d[p++];
                 if(n>d.size()-p||(n&&(x<0||x>s.width||n>unsigned(s.width-x))))throw std::runtime_error("ICO chunk outside image");
-                for(unsigned j=0;j<n;++j){auto at=std::size_t(y)*s.width+x+j;s.indices[at]=d[p+j];s.opaque[at]=255;}
+                for(unsigned j=0;j<n;++j){auto at=std::size_t(y)*s.width+x+j;s.indices[at]=d[p+j];s.opaque[at]=(a.format=="PNM-FRAME"&&d[p+j]==0)?0:255;}
                 p+=n;x+=n;
             }
         }
@@ -279,4 +279,177 @@ std::vector<std::size_t> sprite_group_members(const Inventory& inv,const Asset& 
     // inferred azimuth/animation semantics.
     return result;
 }
+namespace {
+constexpr std::size_t layer_limit=64*1024*1024;
+constexpr std::size_t max_depth=12;
+constexpr std::size_t max_children=100000;
+std::uint32_t layer_u32(std::span<const std::uint8_t> b,std::size_t p){
+    if(p>b.size()||b.size()-p<4)throw std::runtime_error("Truncated nested record");
+    return std::uint32_t(b[p])|(std::uint32_t(b[p+1])<<8)|(std::uint32_t(b[p+2])<<16)|(std::uint32_t(b[p+3])<<24);
+}
+unsigned layer_u16(std::span<const std::uint8_t> b,std::size_t p){
+    if(p>b.size()||b.size()-p<2)throw std::runtime_error("Truncated nested record");
+    return unsigned(b[p])|(unsigned(b[p+1])<<8);
+}
+void layer_bounds(std::span<const std::uint8_t> b,std::size_t p,std::size_t n){
+    if(p>b.size()||n>b.size()-p)throw std::runtime_error("Nested record outside parent");
+}
+std::string layer_name(std::span<const std::uint8_t> b,std::size_t p,std::size_t n){
+    layer_bounds(b,p,n);std::string s;
+    for(std::size_t i=0;i<n&&b[p+i];++i){
+        auto ch=b[p+i];if(ch<32||ch>126||ch=='/'||ch=='\\'||ch==':')
+            throw std::runtime_error("Invalid nested member name");
+        s+=char(ch);
+    }
+    if(s.empty()||s=="."||s=="..")throw std::runtime_error("Invalid nested member name");
+    return s;
+}
+std::string layer_format(const std::string& n){
+    auto dot=n.find_last_of('.');
+    if(dot==std::string::npos)return "UNKNOWN";
+    auto ext=n.substr(dot+1);
+    for(auto& c:ext)if(c>='a'&&c<='z')c-='a'-'A';
+    return ext;
+}
+bool lz_header(std::span<const std::uint8_t> b){
+    if(b.size()<5)return false;
+    auto n=layer_u16(b,0),w=unsigned(b[2]);
+    return n>0&&n<=256&&w>=2&&w<=12&&n+1<(1u<<w)&&b.size()>3+(n==256?0:n);
+}
+std::vector<LayerStep> fs_layers(std::span<const std::uint8_t> b){
+    auto count=layer_u32(b,0);
+    if(!count||count>max_children||count>(b.size()-4)/21)throw std::runtime_error("Invalid nested FS count");
+    std::vector<LayerStep> out;out.reserve(count);
+    for(std::size_t i=0;i<count;++i){
+        auto p=4+i*21;auto n=layer_name(b,p,13);
+        auto off=layer_u32(b,p+13),size=layer_u32(b,p+17);
+        layer_bounds(b,off,size);
+        if(size&&off<4+count*21)throw std::runtime_error("Nested FS member overlaps header");
+        out.push_back({false,off,size,n,layer_format(n),n});
+    }
+    return out;
+}
+std::vector<LayerStep> fsu_layers(std::span<const std::uint8_t> b){
+    auto count=layer_u32(b,4);
+    if(!count||count>10000||count>(b.size()-8)/9)throw std::runtime_error("Invalid nested FSU count");
+    std::vector<LayerStep> out;
+    for(std::size_t i=0;i<count;++i){
+        auto p=8+9*i;auto group=layer_name(b,p,5);auto off=layer_u32(b,p+5);
+        auto n=layer_u16(b,off);
+        if(off<8+count*9||n>max_children-out.size())throw std::runtime_error("Invalid FSU resource");
+        layer_bounds(b,off+2,n*9);
+        for(std::size_t j=0;j<n;++j){
+            auto pos=off+2+j*9;auto name=group+"/"+layer_name(b,pos,3);
+            auto start=layer_u32(b,pos+3),size=layer_u16(b,pos+7);layer_bounds(b,start,size);
+            if(size<3)throw std::runtime_error("Truncated FSU sprite");
+            out.push_back({false,start,size,name,"FSU-SPRITE",name});
+        }
+    }
+    return out;
+}
+// PNM frame offsets from AnimPNM::Decode in the MIT restoration tools.
+// Limit each frame to the next distinct offset (or end of animation).
+std::vector<LayerStep> pnm_layers(std::span<const std::uint8_t> b){
+    if(b.empty()||!b[0]||b.size()<1+4u*b[0])throw std::runtime_error("Invalid PNM frame table");
+    std::vector<std::size_t> offsets;
+    for(unsigned i=0;i<b[0];++i){
+        auto off=layer_u32(b,1+4*i);
+        if(off<1+4u*b[0])throw std::runtime_error("PNM frame overlaps table");
+        layer_bounds(b,off,7);offsets.push_back(off);
+    }
+    auto sorted=offsets;std::sort(sorted.begin(),sorted.end());
+    std::vector<LayerStep> out;
+    for(std::size_t i=0;i<offsets.size();++i){
+        auto next=std::upper_bound(sorted.begin(),sorted.end(),offsets[i]);
+        auto end=next==sorted.end()?b.size():*next;
+        auto name="Frame "+std::to_string(i+1);
+        out.push_back({false,offsets[i],end-offsets[i],name,"PNM-FRAME",name});
+    }
+    return out;
+}
+bool text_bytes(std::span<const std::uint8_t> d){
+    if(d.empty())return false;
+    std::size_t ascii=0;
+    for(auto b:d){
+        if(b<32&&b!=9&&b!=10&&b!=13)return false;
+        if((b>=32&&b<=126)||b==9||b==10||b==13)++ascii;
+    }
+    return ascii>=d.size()-d.size()/5;
+}
+}
+bool can_expand(const Asset& a,const LayerPath& steps){
+    if(steps.size()>=max_depth)return false;
+    auto fmt=steps.empty()?a.format:steps.back().format;
+    return fmt=="LZ"||fmt=="LZ0"||fmt=="FSU-SPRITE"||fmt=="PNM"||
+        ((fmt=="FS"||fmt=="FSU")&&(!steps.empty()||a.member));
+}
+Bytes layer_bytes(const Asset& a,const LayerPath& steps,std::size_t limit){
+    if(steps.size()>max_depth||a.size>limit)throw std::runtime_error("Browser layer limit exceeded");
+    auto data=preview(a,static_cast<std::size_t>(a.size));
+    for(auto& step:steps){
+        if(step.decompress)data=decode_lz(data,limit);
+        else{layer_bounds(data,step.offset,step.size);Bytes slice(data.begin()+step.offset,data.begin()+step.offset+step.size);data=std::move(slice);}
+        if(data.size()!=step.size)throw std::runtime_error("Layer changed; rescan the source");
+    }
+    return data;
+}
+std::vector<LayerStep> layer_children(const Asset& a,const LayerPath& steps){
+    if(!can_expand(a,steps))return {};
+    auto data=layer_bytes(a,steps,layer_limit);
+    auto fmt=steps.empty()?a.format:steps.back().format;
+    auto name=steps.empty()?a.name:steps.back().name;
+    if(fmt=="FS")return fs_layers(data);
+    if(fmt=="FSU")return fsu_layers(data);
+    if(fmt=="PNM")return pnm_layers(data);
+    auto decoded=decode_lz(data,layer_limit);
+    std::string type="DECODED",child_name=name;
+    if(fmt=="FSU-SPRITE")type="FSU-DECODED";
+    else{
+        auto dot=child_name.find_last_of('.');
+        if(dot!=std::string::npos)child_name.resize(dot);
+        auto explicit_format=layer_format(child_name);
+        if(explicit_format=="FS"||explicit_format=="FSU"||explicit_format=="PNM"||
+           explicit_format=="ICO"||explicit_format=="BTN"||explicit_format=="CUR"||
+           explicit_format=="PAL"||explicit_format=="TXT"||explicit_format=="DEF"||
+           explicit_format=="LZ"||explicit_format=="LZ0")type=explicit_format;
+        else if(lz_header(decoded)){
+            // Header alone is not enough: verify the entire bounded decode
+            // before offering an additional compressed layer.
+            try{auto next=decode_lz(decoded,layer_limit);if(next!=decoded)type="LZ";}
+            catch(const std::exception&){}
+        }
+        if(type=="DECODED"){
+            // FS has no magic; require a nonempty completely valid table
+            // and printable member names before offering a nested archive.
+            try{auto members=fs_layers(decoded);if(!members.empty())type="FS";}catch(const std::exception&){}
+        }
+        if(type=="DECODED"&&text_bytes(decoded))type="TEXT";
+    }
+    return {{true,0,decoded.size(),"Decoded ["+type+"]",type,child_name}};
+}
+std::optional<Sprite> layer_image(const Asset& a,const LayerPath& steps,std::span<const std::uint8_t> data){
+    if(steps.empty())return std::nullopt;
+    const auto& last=steps.back();
+    if(last.format=="FSU-DECODED")return decode_sprite(data);
+    Asset virtual_asset=a;virtual_asset.format=last.format;virtual_asset.name=last.name;
+    if(last.format=="DECODED"||last.format=="TEXT"){
+        // Retain original named raw-LZ image dimensions for direct payloads.
+        if(steps.size()==1&&last.decompress)return decode_image(a,data);
+        if(steps.size()>1&&last.decompress){
+            virtual_asset.name=steps[steps.size()-2].name;
+            virtual_asset.format=steps[steps.size()-2].format;
+            return decode_image(virtual_asset,data);
+        }
+        return std::nullopt;
+    }
+    if(last.format=="LZ"||last.format=="LZ0"||last.format=="FSU-SPRITE"||
+       last.format=="FS"||last.format=="FSU"||last.format=="PNM")return std::nullopt;
+    return decode_image(virtual_asset,data);
+}
+bool layer_text(const Asset& a,const LayerPath& steps,std::span<const std::uint8_t> data){
+    if(steps.empty())return is_text_asset(a,data);
+    Asset v=a;v.format=steps.back().format;v.name=steps.back().name;
+    return v.format=="TEXT"?text_bytes(data):is_text_asset(v,data);
+}
+
 }
