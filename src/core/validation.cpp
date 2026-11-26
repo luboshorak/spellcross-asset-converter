@@ -145,6 +145,9 @@ static void map_metadata(PackageSummary& out,const AuditRecord& row,const J& m){
     const auto terrain=game_upper(m.at("terrain").str())+".FS";
     if(terrain!="T11.FS"&&terrain!="PUST.FS"&&terrain!="DEVAST.FS")fail("Unknown tactical terrain");
     ++out.metadata_coverage["tactical-maps"];
+    auto cells=m.at("width").num()*m.at("height").num();
+    if(m.at("ground").at("index_mask").num()!=4095||m.at("ground").at("elevation_shift").num()!=12||!m.at("objects").at("zero_means_empty").boolean()||m.at("objects").at("index_base").num()!=1)fail("Invalid tactical tile encoding metadata");
+    for(auto key:{"enemy_counterattack_posts","player_counterattack_posts"})for(const auto& post:m.at(key).arr())if(post.num()>=cells)fail("Counterattack post outside map");
     auto add=[&](const char* layer,const char* key,const char* kind,const std::string& scope){
         const auto& names=m.at(layer).at(key).arr();
         for(std::size_t i=0;i<names.size();++i)
@@ -156,8 +159,10 @@ static void map_metadata(PackageSummary& out,const AuditRecord& row,const J& m){
     for(const auto* layer:{"anm","pnm","loop_sounds","random_sounds"}){
         bool sound=std::string_view(layer).ends_with("sounds");
         auto n=add(layer,"resources",sound?"sample":layer,sound?"SAMPLES.FS":terrain);
-        for(const auto& pos:m.at(layer).at("placements").arr())
+        for(const auto& pos:m.at(layer).at("placements").arr()){
             if(pos.at("resource").num()>=n)fail("Map placement references missing local resource");
+            if(sound&&pos.at("tile").num()>=cells)fail("Map sound placement outside map");
+        }
     }
 }
 static void unit_metadata(PackageSummary& out,const AuditRecord& row,const J& m){
@@ -863,7 +868,18 @@ static GameAudit game_audit(std::string_view root,const std::map<std::string,Pac
         for(std::size_t i=0;i<b.commands.size();++i){
             if(i)json<<',';const auto& c=b.commands[i];
             json<<"{\"line\":"<<c.line<<",\"keyword\":"<<catalog_quote(c.keyword)<<",\"args\":";
-            json_strings(json,c.args);json<<'}';
+            json_strings(json,c.args);json<<",\"typed_args\":[";
+            for(std::size_t n=0;n<c.args.size();++n){
+                if(n)json<<',';
+                const auto& text=c.args[n];std::int64_t number{};
+                auto parsed=std::from_chars(text.data(),text.data()+text.size(),number);
+                if(parsed.ec==std::errc{}&&parsed.ptr==text.data()+text.size())json<<number;
+                else json<<catalog_quote(text);
+            }
+            json<<']';
+            if(c.keyword=="ORCONNECTIONS")json<<",\"prerequisite_logic\":\"any\"";
+            if(c.keyword=="WAITFORRESEARCH")json<<",\"prerequisite_logic\":\"all\"";
+            json<<'}';
         }
         json<<"]}";
     }
@@ -945,7 +961,8 @@ static GameAudit game_audit(std::string_view root,const std::map<std::string,Pac
     }
     json<<"],\"coverage\":";json_counts(json,coverage);
     json<<",\"unreviewed_commands\":";json_counts(json,unknown);
-    json<<",\"reference_counts\":";json_counts(json,results);json<<"}\n";
+    json<<",\"reference_counts\":";json_counts(json,results);
+    json<<",\"uncertified_semantics\":[\"original animation timing\",\"fire origins absent from retail FSU\",\"unmapped unit bytes and uncertain flags\",\"font character encoding and rendering parity\",\"terrain color slot semantics\",\"tactical event command execution and objective semantics\",\"all unreviewed script commands\",\"original source-byte parity\",\"gameplay parity\"]}\n";
     report<<"\nGAME METADATA / REFERENCE AUDIT (known rules only)\n";
     for(const auto& [k,n]:coverage)report<<k<<": "<<n<<"\n";
     report<<"\nREFERENCE RESULTS\n";
