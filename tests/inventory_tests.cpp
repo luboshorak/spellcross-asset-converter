@@ -1,5 +1,6 @@
 #include "spellcross/inventory.hpp"
 #include "spellcross/graphics.hpp"
+#include "spellcross/video.hpp"
 #include <algorithm>
 #include <chrono>
 #include <fstream>
@@ -119,6 +120,20 @@ int main(){
         auto frames=sc::layer_children(anim,{});require(frames.size()==1&&frames[0].format=="PNM-FRAME");
         auto frame=sc::layer_image(anim,{frames[0]},sc::layer_bytes(anim,{frames[0]}));
         require(frame&&frame->width==3&&frame->opaque[0]==0&&frame->opaque[1]==255);
-        std::cout<<"Inventory, graphics and recursive browser tests passed\n";
+        std::vector<std::int16_t> audio{-32768,0,32767};
+        auto wave=sc::pcm_wave(audio,11025,1);
+        require(wave.size()==50&&wave[44]==0&&wave[45]==128&&wave[48]==255&&wave[49]==127);
+        B dp2(784);le(dp2,0,1);le(dp2,772,2);le(dp2,776,2);write(t.p/"clip.DP2",dp2);
+        sc::Asset clip{t.p/"clip.DP2","clip.DP2","DP2",0,dp2.size(),false};
+        auto video=sc::decode_video({},clip);require(video.width==2&&video.height==2&&video.frames.size()==1&&video.frames[0]==B(4,0));
+        B tile{1,0,2,0,0xff,0xff,0xff,0xff, 2,0,1,0, 0,1,2,3};
+        sc::Asset terrain;terrain.name="T11.FS::SLOPE.DTA";terrain.member=true;terrain.format="DTA";
+        auto tile_image=sc::decode_image(terrain,tile);
+        require(tile_image&&tile_image->width==80&&tile_image->y==-1&&tile_image->opaque[2]==0&&tile_image->indices[3]==1);
+        B anm(5+tile.size());anm[0]=1;le(anm,1,5);std::copy(tile.begin(),tile.end(),anm.begin()+5);write(t.p/"TILE.ANM",anm);
+        sc::Asset anim2{t.p/"TILE.ANM","TILE.ANM","ANM",0,anm.size(),false};
+        auto layers=sc::layer_children(anim2,{});require(layers.size()==1&&layers[0].format=="ANM-FRAME");
+        auto tile_frame=sc::layer_image(anim2,{layers[0]},sc::layer_bytes(anim2,{layers[0]}));require(tile_frame&&tile_frame->width==80);
+        std::cout<<"Inventory, graphics, recursive browser and video tests passed\n";
     }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}
 }

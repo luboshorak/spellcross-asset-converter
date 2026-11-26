@@ -151,6 +151,19 @@ bool is_text_asset(const Asset& a,std::span<const std::uint8_t> d){
 }
 Palette asset_palette(const Inventory& inv,const Asset& a,const Palette& tactical){
     auto n=upper_name(a);
+    if(in_archive(a,"T11.FS")||in_archive(a,"PUST.FS")||in_archive(a,"DEVAST.FS")){
+        Palette p=tactical;
+        for(auto& entry:inv.assets){
+            if(block_name(entry)!=block_name(a))continue;
+            auto bank=upper_name(entry);unsigned first=0,count=0;
+            if(bank=="MAP.PAL"&&entry.size==384)count=128;
+            if(bank=="CYCLE.PAL"&&entry.size==30){first=240;count=10;}
+            if(!count)continue;
+            try{auto d=preview(entry,count*3);std::copy(d.begin(),d.end(),p.rgb.begin()+first*3);
+                std::fill_n(p.known.begin()+first,count,true);}catch(const std::exception&){}
+        }
+        return p;
+    }
     if(in_archive(a,"INFO.FS")&&a.format=="LZ"){
         Palette p{};
         for(unsigned i=0;i<256;++i)for(int c=0;c<3;++c)p.rgb[i*3+c]=static_cast<std::uint8_t>(i);
@@ -178,7 +191,31 @@ Palette asset_palette(const Inventory& inv,const Asset& a,const Palette& tactica
     bank("STRATEGY.PAL",0,256);bank("_SHARED1.PAL",0,128);bank("BIG_MAP.PAL",192,64);
     return p;
 }
+static bool terrain_archive(const Asset& a){
+    return in_archive(a,"T11.FS")||in_archive(a,"PUST.FS")||in_archive(a,"DEVAST.FS");
+}
+// The terrain scanline layout follows Sprite::Decode, Maslan (MIT).
+static Sprite terrain_sprite(std::span<const std::uint8_t> d){
+    if(d.size()<8)throw std::runtime_error("Truncated terrain sprite");
+    Sprite s;s.width=80;s.height=d[0];s.shadow_index=false;
+    std::uint32_t origin=std::uint32_t(d[4])|std::uint32_t(d[5])<<8|std::uint32_t(d[6])<<16|std::uint32_t(d[7])<<24;
+    s.y=static_cast<std::int32_t>(origin);
+    s.indices.resize(std::size_t(s.width)*s.height);s.opaque.resize(s.indices.size());
+    std::size_t pos=8;
+    for(int y=0;y<s.height;++y){
+        if(d.size()-pos<4)throw std::runtime_error("Truncated terrain scanline");
+        unsigned x=d[pos],full=d[pos+2],part=d[pos+3];pos+=4;
+        if(4*full+8*part>d.size()-pos||x+4*(full+part)>80)throw std::runtime_error("Terrain scanline out of bounds");
+        auto put=[&](unsigned pixel){auto at=std::size_t(y)*80+x++;s.indices[at]=static_cast<std::uint8_t>(pixel);s.opaque[at]=pixel?255:0;};
+        for(unsigned j=0;j<full*4;++j)put(d[pos++]);
+        for(unsigned j=0;j<part;++j,pos+=8){
+            for(unsigned k=0;k<4;++k){if(d[pos+4+k]!=(d[pos+k]?0:255))throw std::runtime_error("Invalid terrain opacity mask");put(d[pos+k]);}
+        }
+    }
+    s.trailing_bytes=d.size()-pos;return s;
+}
 std::optional<Sprite> decode_image(const Asset& a,std::span<const std::uint8_t> d){
+    if(a.format=="ANM-FRAME"||(a.format=="DTA"&&terrain_archive(a)))return terrain_sprite(d);
     if(a.format=="FSU-SPRITE")return decode_sprite(d);
     Sprite s;s.shadow_index=false;
     auto u16=[&](std::size_t i){return unsigned(d[i])|(unsigned(d[i+1])<<8);};
@@ -349,13 +386,13 @@ std::vector<LayerStep> fsu_layers(std::span<const std::uint8_t> b){
 }
 // PNM frame offsets from AnimPNM::Decode in the MIT restoration tools.
 // Limit each frame to the next distinct offset (or end of animation).
-std::vector<LayerStep> pnm_layers(std::span<const std::uint8_t> b){
+std::vector<LayerStep> pnm_layers(std::span<const std::uint8_t> b,bool anm=false){
     if(b.empty()||!b[0]||b.size()<1+4u*b[0])throw std::runtime_error("Invalid PNM frame table");
     std::vector<std::size_t> offsets;
     for(unsigned i=0;i<b[0];++i){
         auto off=layer_u32(b,1+4*i);
         if(off<1+4u*b[0])throw std::runtime_error("PNM frame overlaps table");
-        layer_bounds(b,off,7);offsets.push_back(off);
+        layer_bounds(b,off,anm?8:7);offsets.push_back(off);
     }
     auto sorted=offsets;std::sort(sorted.begin(),sorted.end());
     std::vector<LayerStep> out;
@@ -363,7 +400,7 @@ std::vector<LayerStep> pnm_layers(std::span<const std::uint8_t> b){
         auto next=std::upper_bound(sorted.begin(),sorted.end(),offsets[i]);
         auto end=next==sorted.end()?b.size():*next;
         auto name="Frame "+std::to_string(i+1);
-        out.push_back({false,offsets[i],end-offsets[i],name,"PNM-FRAME",name});
+        out.push_back({false,offsets[i],end-offsets[i],name,anm?"ANM-FRAME":"PNM-FRAME",name});
     }
     return out;
 }
@@ -380,7 +417,7 @@ bool text_bytes(std::span<const std::uint8_t> d){
 bool can_expand(const Asset& a,const LayerPath& steps){
     if(steps.size()>=max_depth)return false;
     auto fmt=steps.empty()?a.format:steps.back().format;
-    return fmt=="LZ"||fmt=="LZ0"||fmt=="FSU-SPRITE"||fmt=="PNM"||
+    return fmt=="LZ"||fmt=="LZ0"||fmt=="FSU-SPRITE"||fmt=="PNM"||fmt=="ANM"||
         ((fmt=="FS"||fmt=="FSU")&&(!steps.empty()||a.member));
 }
 Bytes layer_bytes(const Asset& a,const LayerPath& steps,std::size_t limit){
@@ -400,7 +437,7 @@ std::vector<LayerStep> layer_children(const Asset& a,const LayerPath& steps){
     auto name=steps.empty()?a.name:steps.back().name;
     if(fmt=="FS")return fs_layers(data);
     if(fmt=="FSU")return fsu_layers(data);
-    if(fmt=="PNM")return pnm_layers(data);
+    if(fmt=="PNM"||fmt=="ANM")return pnm_layers(data,fmt=="ANM");
     auto decoded=decode_lz(data,layer_limit);
     std::string type="DECODED",child_name=name;
     if(fmt=="FSU-SPRITE")type="FSU-DECODED";
@@ -408,7 +445,7 @@ std::vector<LayerStep> layer_children(const Asset& a,const LayerPath& steps){
         auto dot=child_name.find_last_of('.');
         if(dot!=std::string::npos)child_name.resize(dot);
         auto explicit_format=layer_format(child_name);
-        if(explicit_format=="FS"||explicit_format=="FSU"||explicit_format=="PNM"||
+        if(explicit_format=="FS"||explicit_format=="FSU"||explicit_format=="PNM"||explicit_format=="ANM"||
            explicit_format=="ICO"||explicit_format=="BTN"||explicit_format=="CUR"||
            explicit_format=="PAL"||explicit_format=="TXT"||explicit_format=="DEF"||
            explicit_format=="LZ"||explicit_format=="LZ0")type=explicit_format;
@@ -443,7 +480,7 @@ std::optional<Sprite> layer_image(const Asset& a,const LayerPath& steps,std::spa
         return std::nullopt;
     }
     if(last.format=="LZ"||last.format=="LZ0"||last.format=="FSU-SPRITE"||
-       last.format=="FS"||last.format=="FSU"||last.format=="PNM")return std::nullopt;
+       last.format=="FS"||last.format=="FSU"||last.format=="PNM"||last.format=="ANM")return std::nullopt;
     return decode_image(virtual_asset,data);
 }
 bool layer_text(const Asset& a,const LayerPath& steps,std::span<const std::uint8_t> data){

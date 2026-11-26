@@ -1,5 +1,8 @@
 #include "spellcross/inventory.hpp"
 #include "spellcross/graphics.hpp"
+#include "spellcross/video.hpp"
+#include <wx/sound.h>
+#include <chrono>
 #include <wx/splitter.h>
 #include <wx/treectrl.h>
 #include <wx/scrolwin.h>
@@ -44,7 +47,7 @@ void paint(wxWindow* p, bool dark=true) {
 }
 wxString number(std::uint64_t n) {return wxString::Format("%llu",static_cast<unsigned long long>(n));}
 enum {open_dir=wxID_HIGHEST+1,open_file,scan_id,export_one,export_all,save_manifest,
-    prev_id,next_id,play_id,zoom_in,zoom_out,zoom_fit,clear_id,png_one,png_group,validate_id,decoded_one,batch_id};
+    prev_id,next_id,play_id,zoom_in,zoom_out,zoom_fit,clear_id,png_one,png_group,validate_id,decoded_one,batch_id,movie_id};
 class ItemData final:public wxTreeItemData {
 public:
     std::size_t index;
@@ -94,6 +97,53 @@ public:
     void SetImage(const wxImage& i){image=i;Scroll(0,0);rebuild();}
     void SetZoom(int delta){zoom=delta==0?0:std::clamp((zoom?zoom:1)+delta,1,8);Scroll(0,0);rebuild();}
 };
+class VideoDialog final:public wxDialog {
+    sc::Video movie;
+    Canvas* canvas{};
+    wxStaticText* status{};
+    wxTimer timer;
+    wxSound sound;
+    std::chrono::steady_clock::time_point started;
+    std::size_t current=static_cast<std::size_t>(-1);
+    bool playing=false;
+    void render(std::size_t i){
+        if(i==current)return;current=i;
+        wxImage im(movie.width,movie.height);
+        auto* rgb=im.GetData();const auto& frame=movie.frames[i];
+        const auto& pal=movie.palettes[movie.palettes.size()==1?0:i];
+        for(std::size_t p=0;p<frame.size();++p)for(int c=0;c<3;++c)rgb[p*3+c]=pal[frame[p]*3+c];
+        canvas->SetImage(im);
+        status->SetLabel(number(i+1)+" / "+number(movie.frames.size())+" frames");
+    }
+    void stop(){timer.Stop();if(playing)wxSound::Stop();playing=false;}
+    void play(){
+        stop();current=static_cast<std::size_t>(-1);render(0);
+        bool audio_ok=false;
+        if(!movie.wave.empty()&&sound.Create(movie.wave.size(),movie.wave.data()))audio_ok=sound.Play(wxSOUND_ASYNC);
+        started=std::chrono::steady_clock::now();playing=true;timer.Start(15);
+        SetTitle(audio_ok?"Video preview":"Video preview (silent / audio unavailable)");
+    }
+public:
+    VideoDialog(wxWindow* parent,sc::Video v):wxDialog(parent,wxID_ANY,"Video preview",wxDefaultPosition,wxSize(860,650),wxDEFAULT_DIALOG_STYLE|wxRESIZE_BORDER),movie(std::move(v)),timer(this){
+        auto* s=new wxBoxSizer(wxVERTICAL);SetSizer(s);
+        canvas=new Canvas(this);s->Add(canvas,1,wxALL|wxEXPAND,6);
+        status=new wxStaticText(this,wxID_ANY,"");s->Add(status,0,wxALL,6);
+        auto* controls=new wxBoxSizer(wxHORIZONTAL);s->Add(controls,0,wxALIGN_CENTER|wxALL,6);
+        auto* restart=new wxButton(this,wxID_ANY,"Play / restart");controls->Add(restart,0,wxALL,4);
+        auto* pause=new wxButton(this,wxID_ANY,"Stop");controls->Add(pause,0,wxALL,4);
+        auto* close=new wxButton(this,wxID_CANCEL,"Close");controls->Add(close,0,wxALL,4);
+        restart->Bind(wxEVT_BUTTON,[this](wxCommandEvent&){play();});
+        pause->Bind(wxEVT_BUTTON,[this](wxCommandEvent&){stop();});
+        Bind(wxEVT_TIMER,[this](wxTimerEvent&){
+            double elapsed=std::chrono::duration<double>(std::chrono::steady_clock::now()-started).count();
+            auto frame=static_cast<std::size_t>(elapsed*movie.fps);
+            if(frame>=movie.frames.size()){render(movie.frames.size()-1);stop();}
+            else render(frame);
+        },timer.GetId());
+        render(0);
+    }
+    ~VideoDialog() override{stop();}
+};
 wxImage sprite_image(const sc::Sprite& sprite,const sc::Palette& palette,int mode=0){
     if(sprite.width<=0||sprite.height<=0)throw std::runtime_error("Empty sprite");
     wxImage image(sprite.width,sprite.height);
@@ -141,6 +191,7 @@ class Frame final : public wxFrame {
     wxTextCtrl *metadata{},*raw_hex{},*text_view{};
     wxChoice *block_choice{},*encoding_choice{};
     wxButton* batch_button{};
+    wxButton* movie_button{};
     std::map<std::string,std::vector<std::size_t>> blocks;
     std::vector<std::string> block_keys;
     wxButton *prev_button{},*next_button{},*play_button{},*png_button{},*group_button{},*decoded_button{};
@@ -340,7 +391,7 @@ class Frame final : public wxFrame {
         }return w(o.str());
     }
     void show_layer(const ItemData& node){
-        active.reset();stop_play();sequence.clear();sequence_pos=0;
+        active.reset();stop_play();sequence.clear();sequence_pos=0;movie_button->Enable(false);
         prev_button->Enable(false);next_button->Enable(false);play_button->Enable(false);
         png_button->Enable(false);group_button->Enable(false);export_button->Enable(false);decoded_button->Enable(false);
         graphic->SetImage(wxImage());preview_box->Clear();raw_hex->Clear();metadata->Clear();text_view->Clear();
@@ -370,7 +421,7 @@ class Frame final : public wxFrame {
         if(auto* node=selected_data();node&&!node->layers.empty()&&node->index<inv.assets.size()){show_layer(*node);return;}
         auto* a=selected();
         active=a?std::optional<std::size_t>(a-inv.assets.data()):std::nullopt;
-        export_button->Enable(a!=nullptr);
+        export_button->Enable(a!=nullptr);movie_button->Enable(a&&sc::is_video(*a));
         png_button->Enable(false);group_button->Enable(false);decoded_button->Enable(false);
         graphic->SetImage(wxImage());preview_box->Clear();raw_hex->Clear();metadata->Clear();text_view->Clear();
         sequence.clear();sequence_pos=0;
@@ -386,6 +437,7 @@ class Frame final : public wxFrame {
         try{
             auto stored=sc::preview(*a);
             raw_hex->SetValue(hex(stored));
+            if(sc::is_video(*a)){metadata->SetValue(details+"\nUse Play video to decode and preview.");preview_tabs->SetSelection(3);return;}
             auto data=stored;
             if(sc::compressed(*a)){
                 data=sc::decode_asset(*a);decoded_button->Enable(true);
@@ -394,7 +446,7 @@ class Frame final : public wxFrame {
             preview_box->SetValue(hex(data));
             auto full=data;
             if(!sc::compressed(*a)&&a->size>data.size()&&a->size<=64*1024*1024&&
-                (a->format=="ICO"||a->format=="BTN"||a->format=="CUR"||a->format=="GFK"||sc::is_text_asset(*a,data)))
+                (a->format=="ICO"||a->format=="BTN"||a->format=="CUR"||a->format=="GFK"||a->format=="DTA"||sc::is_text_asset(*a,data)))
                 full=sc::decode_asset(*a);
             if(auto decoded=sc::decode_image(*a,full)){
                 auto s=std::move(*decoded);
@@ -419,6 +471,15 @@ class Frame final : public wxFrame {
             else{preview_tabs->SetSelection(1);}
         }catch(const std::exception& e){details+="\nERROR: "+w(e.what());log("ERROR: "+w(e.what()));preview_tabs->SetSelection(3);}
         metadata->SetValue(details);
+    }
+    void play_video(){
+        stop_play();auto* a=selected();if(!a||!sc::is_video(*a))return;
+        try{
+            sc::Video movie;
+            {wxBusyCursor busy;movie=sc::decode_video(inv,*a);}
+            log("VIDEO: "+w(a->name)+" | "+number(movie.frames.size())+" frames | "+w(movie.audio_note));
+            VideoDialog dialog(this,std::move(movie));dialog.ShowModal();
+        }catch(const std::exception& e){log("VIDEO ERROR: "+w(e.what()));wxMessageBox(w(e.what()),"Video decode failed",wxOK|wxICON_ERROR,this);}
     }
     void step(int direction){
         if(sequence.size()<2)return;
@@ -637,7 +698,7 @@ public:
         auto* root=new wxBoxSizer(wxVERTICAL);SetSizer(root);
         auto* header=new wxPanel(this);paint(header,false);auto* hs=new wxBoxSizer(wxVERTICAL);header->SetSizer(hs);
         label(header,hs,"SPELLCROSS  /  ASSET CONVERTER",true);
-        label(header,hs,"RELOADED TOOLKIT   |   v0.4.1   |   Original data inventory");
+        label(header,hs,"RELOADED TOOLKIT   |   v0.5.0   |   Original data inventory");
         root->Add(header,0,wxEXPAND);
         tabs=new wxNotebook(this,wxID_ANY);root->Add(tabs,1,wxALL|wxEXPAND,10);
         wxBoxSizer* s;
@@ -668,6 +729,7 @@ public:
         auto* nav=new wxBoxSizer(wxHORIZONTAL);rs->Add(nav,0,wxEXPAND|wxLEFT|wxRIGHT,4);
         prev_button=button(right,nav,prev_id,"<");next_button=button(right,nav,next_id,">");play_button=button(right,nav,play_id,"Play sequence");
         button(right,nav,clear_id,"Clear");
+        movie_button=button(right,nav,movie_id,"Play video");movie_button->Enable(false);
         prev_button->Enable(false);next_button->Enable(false);play_button->Enable(false);
         preview_tabs=new wxNotebook(right,wxID_ANY);rs->Add(preview_tabs,1,wxEXPAND|wxALL,4);
         auto* visual=new wxPanel(preview_tabs);paint(visual);auto* vs=new wxBoxSizer(wxVERTICAL);visual->SetSizer(vs);
@@ -711,7 +773,7 @@ public:
         Bind(wxEVT_MENU,[this](wxCommandEvent&){analyze();},scan_id);
         Bind(wxEVT_MENU,[this](wxCommandEvent&){export_manifest();},save_manifest);
         Bind(wxEVT_MENU,[this](wxCommandEvent&){Close();},wxID_EXIT);
-        Bind(wxEVT_MENU,[this](wxCommandEvent&){wxMessageBox("Spellcross Asset Converter 0.4.1\nPart of Spellcross Reloaded\nMIT license\nFS format based on Stanislav Maslan's restoration tools.","About",wxOK|wxICON_INFORMATION,this);},wxID_ABOUT);
+        Bind(wxEVT_MENU,[this](wxCommandEvent&){wxMessageBox("Spellcross Asset Converter 0.5.0\nPart of Spellcross Reloaded\nMIT license\nCopyright (c) 2026 Luboš Horák\nSpellcross Reloaded by Luboš Horák; foundations by Stanislav Mašláň.\nhttps://github.com/luboshorak/spellcross-reloaded\nCAN decoder: CPAL-1.0; libsmacker: LGPL-2.1-or-later.","About",wxOK|wxICON_INFORMATION,this);},wxID_ABOUT);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){choose(true);},open_dir);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){choose(false);},open_file);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){analyze();},scan_id);
@@ -743,6 +805,7 @@ public:
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){export_decoded();},decoded_one);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){validate_decoding();},validate_id);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){convert_blocks();},batch_id);
+        Bind(wxEVT_BUTTON,[this](wxCommandEvent&){play_video();},movie_id);
         tabs->Bind(wxEVT_NOTEBOOK_PAGE_CHANGED,[this](wxBookCtrlEvent& e){if(e.GetSelection()!=1)stop_play();e.Skip();});
         Centre();
     }
