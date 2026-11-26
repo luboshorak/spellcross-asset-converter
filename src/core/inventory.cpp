@@ -26,6 +26,8 @@ static std::string upper(std::string s) {
     return s;
 }
 static std::string format(const std::string& n) {
+    auto leaf=n.substr(n.find_last_of("/\\:")+1);
+    if(upper(leaf)=="INSTALL.DTA")return "INSTALL-DTA";
     auto i = n.find_last_of('.');
     auto j = n.find_last_of("/\\:");
     return i == std::string::npos || (j != std::string::npos && i < j)
@@ -60,7 +62,8 @@ static void add(Inventory& out, Asset a) {
     if (out.assets.size() >= max_assets) throw std::runtime_error("Inventory limit exceeded");
     out.assets.push_back(std::move(a));
 }
-static void inspect_fs(Inventory& out, const Asset& a) {
+static void source_asset(Inventory&,Asset,unsigned depth=0);
+static void inspect_fs(Inventory& out, const Asset& a,unsigned depth) {
     try {
         Reader r(a.backing);
         bounds(a.offset,a.size,r.size);
@@ -84,7 +87,7 @@ static void inspect_fs(Inventory& out, const Asset& a) {
             if (len && off<table) throw std::runtime_error("FS member overlaps directory");
             members.push_back({a.backing,a.name+"::"+n,format(n),a.offset+off,len,true,static_cast<std::uint32_t>(i)});
         }
-        for (auto& m:members) add(out,std::move(m));
+        for (auto& m:members) source_asset(out,std::move(m),depth+1);
         ++out.fs_archives;
     } catch (const std::exception& e) {
         out.warnings.push_back(a.name+": "+e.what());
@@ -132,10 +135,78 @@ static void inspect_fsu(Inventory& out,const Asset& a) {
         ++out.fsu_archives;
     } catch(const std::exception& e){out.warnings.push_back(a.name+": "+e.what());}
 }
-static void source_asset(Inventory& out, Asset a) {
+// INSTALL.DTA index layout follows Reloaded main.cpp, ReadInstallDtaIndex.
+// The offsets in the file table are relative to the start of this container,
+// including when the container itself is an extent inside an ISO image.
+static std::string install_directory(std::string raw){
+    std::replace(raw.begin(),raw.end(),'\\','/');
+    std::string result;
+    for(std::size_t pos=0;pos<=raw.size();){
+        auto end=raw.find('/',pos);
+        auto part=raw.substr(pos,end==raw.npos?raw.npos:end-pos);
+        if(part==".."||part.find(':')!=part.npos)
+            throw std::runtime_error("Unsafe INSTALL.DTA directory");
+        for(unsigned char ch:part)if(ch<32||ch==127)throw std::runtime_error("Invalid INSTALL.DTA directory");
+        // DOS root markers (empty, slash, dot) are harmless logical prefixes.
+        if(!part.empty()&&part!="."){
+            if(!result.empty())result+='/';result+=part;
+        }
+        if(end==raw.npos)break;pos=end+1;
+    }
+    return result;
+}
+static void inspect_install(Inventory& out,const Asset& a,unsigned depth){
+    try{
+        Reader r(a.backing);bounds(a.offset,a.size,r.size);bounds(0,8,a.size);
+        std::array<std::uint8_t,25> b{};
+        r.read(a.offset,b.data(),8);
+        U dir_size=le(b.data()),dir_count=le(b.data()+4);
+        if(dir_size<4||dir_size>1024*1024||!dir_count||dir_count>1024)
+            throw std::runtime_error("Invalid INSTALL.DTA directory table");
+        U count_pos=4+dir_size;bounds(count_pos,4,a.size);
+        std::vector<std::uint8_t> names(static_cast<std::size_t>(dir_size-4));
+        r.read(a.offset+8,names.data(),names.size());
+        std::vector<std::string> dirs;std::size_t pos=0;
+        for(U i=0;i<dir_count;++i){
+            if(pos>=names.size())throw std::runtime_error("Truncated INSTALL.DTA directory name");
+            auto end=std::find(names.begin()+pos,names.end(),0);
+            auto len=static_cast<std::size_t>(end-(names.begin()+pos));
+            if(end==names.end()||len>4095)throw std::runtime_error("Unterminated INSTALL.DTA directory name");
+            dirs.push_back(install_directory(std::string(names.begin()+pos,end)));pos+=len+1;
+        }
+        r.read(a.offset+count_pos,b.data(),4);
+        U count=le(b.data());
+        if(!count||count>100000||count>max_assets-out.assets.size()||count>(a.size-count_pos-4)/25)
+            throw std::runtime_error("Invalid INSTALL.DTA file table");
+        U records_end=count_pos+4+25*count;
+        std::vector<Asset> files;files.reserve(static_cast<std::size_t>(count));
+        for(U i=0;i<count;++i){
+            r.read(a.offset+count_pos+4+i*25,b.data(),25);
+            std::string n(b.begin(),std::find(b.begin(),b.begin()+13,0));
+            if(n.empty()||n=="."||n==".."||n.find_first_of("/\\:")!=n.npos)
+                throw std::runtime_error("Invalid INSTALL.DTA filename");
+            for(unsigned char ch:n)if(ch<32||ch==127)throw std::runtime_error("Invalid INSTALL.DTA filename");
+            U off=le(b.data()+13),len=le(b.data()+17),dir=le(b.data()+21);
+            if(dir>=dirs.size())throw std::runtime_error("Invalid INSTALL.DTA directory index");
+            bounds(off,len,a.size);
+            if(len&&off<records_end)throw std::runtime_error("INSTALL.DTA payload overlaps index");
+            auto logical=a.name+"::"+(dirs[dir].empty()?"":dirs[dir]+"/")+n;
+            files.push_back({a.backing,std::move(logical),format(n),a.offset+off,len,true,static_cast<std::uint32_t>(i)});
+        }
+        ++out.install_archives;out.install_files+=files.size();
+        // Catalog all directories, not only DATA: CD-side and installed
+        // resources share the same bounded reader, no extraction required.
+        for(auto& child:files)source_asset(out,std::move(child),depth+1);
+    }catch(const std::exception& e){out.warnings.push_back(a.name+": "+e.what());}
+}
+static void source_asset(Inventory& out, Asset a,unsigned depth) {
+    a.indexed_container=a.format=="FS"||a.format=="FSU"||a.format=="INSTALL-DTA";
     add(out,a);
-    if (a.format=="FS") inspect_fs(out,a);
-    else if(a.format=="FSU") inspect_fsu(out,a);
+    if(!a.indexed_container)return;
+    if(depth>=12){out.warnings.push_back(a.name+": archive nesting limit exceeded");return;}
+    if(a.format=="FS")inspect_fs(out,a,depth);
+    else if(a.format=="FSU")inspect_fsu(out,a);
+    else inspect_install(out,a,depth);
 }
 static void scan_iso(Inventory& out, const fs::path& path) {
     Reader r(path);
@@ -220,10 +291,10 @@ Inventory scan(const fs::path& source) {
         if (format(n)=="ISO") {
             out.source_kind="ISO 9660";
             scan_iso(out,root);
-        } else if (format(n)=="FS" || format(n)=="FSU") {
+        } else if (format(n)=="FS" || format(n)=="FSU" || format(n)=="INSTALL-DTA") {
             out.source_kind=format(n)+" archive";
             source_asset(out,{root,n,format(n),0,fs::file_size(root),false});
-        } else throw std::runtime_error("Choose a directory, .iso, .fs or .fsu file");
+        } else throw std::runtime_error("Choose a directory, .iso, .fs, .fsu or INSTALL.DTA file");
     } else throw std::runtime_error("Unsupported source");
     std::stable_sort(out.assets.begin(),out.assets.end(),[](const Asset& a,const Asset& b){return a.name<b.name;});
     return out;

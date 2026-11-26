@@ -12,12 +12,14 @@ struct Asset {
     std::uint64_t offset{}, size{};
     bool member{};
     std::uint32_t source_ordinal{};
+    bool indexed_container{}; // members already catalogued by scan
 };
 struct Inventory {
     std::vector<Asset> assets;
     std::vector<std::string> warnings;
     std::size_t fs_archives{}, fsu_archives{}, fsu_resources{}, fsu_sprites{};
     std::string source_kind;
+    std::size_t install_archives{},install_files{};
 };
 std::string utf8(const std::filesystem::path&);
 Inventory scan(const std::filesystem::path& source);

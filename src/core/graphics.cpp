@@ -126,13 +126,23 @@ static std::string upper_name(const Asset& a){
 }
 bool compressed(const Asset& a){return a.format=="LZ"||a.format=="LZ0"||a.format=="FSU-SPRITE";}
 std::string block_name(const Asset& a){
-    if(a.member){auto i=a.name.find("::");if(i!=std::string::npos)return a.name.substr(0,i);}
-    if(a.format=="FS"||a.format=="FSU")return a.name;
+    // A container owns its own block even when embedded in INSTALL.DTA.
+    if(a.format=="FS"||a.format=="FSU"||a.format=="INSTALL-DTA")return a.name;
+    if(a.member){
+        auto i=a.name.rfind("::");
+        if(i!=std::string::npos){
+            auto parent=a.name.substr(0,i);
+            auto leaf=parent.substr(parent.find_last_of("/\\:")+1);
+            for(auto& c:leaf)if(c>='a'&&c<='z')c-='a'-'A';
+            // Installer members outside FS/FSU behave like loose installed files.
+            if(leaf!="INSTALL.DTA")return parent;
+        }
+    }
     return {};
 }
 static bool in_archive(const Asset& a,std::string_view archive){
     auto block=block_name(a);
-    auto slash=block.find_last_of("/\\");
+    auto slash=block.find_last_of("/\\:");
     if(slash!=std::string::npos)block=block.substr(slash+1);
     for(auto& c:block)if(c>='a'&&c<='z')c-='a'-'A';
     return a.member&&block==archive;
@@ -153,7 +163,7 @@ bool is_text_asset(const Asset& a,std::span<const std::uint8_t> d){
 // Native geometry from SR strategic renderer and UI coordinate catalogue.
 struct RawUi {int w,h;bool transparent;std::string palette;};
 static std::optional<RawUi> raw_ui(const Asset& a){
-    auto n=upper_name(a);if(a.member&&!in_archive(a,"COMMON.FS"))return std::nullopt;
+    auto n=upper_name(a);if(a.member&&!block_name(a).empty()&&!in_archive(a,"COMMON.FS"))return std::nullopt;
     if(n=="MAINMENU.LZ"||n=="MAINMENU.BIN")return RawUi{640,480,false,"MAINMENU.PAL"};
     if(n=="MAINM_BG.LZ")return RawUi{255,272,false,"MAINMENU.PAL"};
     if((n.starts_with("MAINM_")||n.starts_with("MAINMD"))&&n.ends_with(".LZ")&&n.size()==10)return RawUi{255,62,true,"MAINMENU.PAL"};
@@ -478,7 +488,7 @@ bool can_expand(const Asset& a,const LayerPath& steps){
     if(steps.size()>=max_depth)return false;
     auto fmt=steps.empty()?a.format:steps.back().format;
     return fmt=="LZ"||fmt=="LZ0"||fmt=="FSU-SPRITE"||fmt=="PNM"||fmt=="ANM"||
-        ((fmt=="FS"||fmt=="FSU")&&(!steps.empty()||a.member));
+        ((fmt=="FS"||fmt=="FSU")&&(!steps.empty()||(a.member&&!a.indexed_container)));
 }
 Bytes layer_bytes(const Asset& a,const LayerPath& steps,std::size_t limit){
     if(steps.size()>max_depth||a.size>limit)throw std::runtime_error("Browser layer limit exceeded");

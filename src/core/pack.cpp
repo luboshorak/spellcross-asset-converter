@@ -17,7 +17,7 @@ static std::string upper(std::string s){
     for(auto& c:s)if(c>='a'&&c<='z')c-='a'-'A';return s;
 }
 static std::string basename(std::string s){
-    auto p=s.find_last_of("/\\");return p==std::string::npos?s:s.substr(p+1);
+    auto p=s.find_last_of("/\\:");return p==std::string::npos?s:s.substr(p+1);
 }
 std::string category(const Asset& a){
     auto b=upper(basename(block_name(a)));
