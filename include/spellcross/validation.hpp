@@ -31,6 +31,13 @@ struct DefinitionSet {
     std::string source,kind;
     std::vector<std::string> ids;
 };
+struct GameCommand {std::uint64_t line{};std::string keyword;std::vector<std::string> args;};
+struct GameBlock {
+    std::string source,domain,keyword,key;
+    std::uint64_t line{};
+    std::vector<std::string> args;
+    std::vector<GameCommand> commands;
+};
 struct PackageSummary {
     std::string category;
     std::map<std::string,std::uint64_t> counts;
@@ -42,6 +49,7 @@ struct PackageSummary {
     std::vector<AtlasGroup> atlas_groups;
     std::vector<GameReference> game_references;
     std::vector<DefinitionSet> definitions;
+    std::vector<GameBlock> game_blocks;
     std::map<std::string,std::uint64_t> metadata_coverage;
     std::map<std::string,std::uint64_t> unreviewed_commands;
 };
