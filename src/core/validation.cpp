@@ -436,7 +436,7 @@ std::string resource_catalog(std::string_view root,const std::map<std::string,Pa
         o<<'{';bool first_key=true;
         for(const auto& [key,ids]:map){
             if(!first_key)o<<',';first_key=false;
-            o<<catalog_quote(key)<<':[';
+            o<<catalog_quote(key)<<":[";
             for(std::size_t i=0;i<ids.size();++i){if(i)o<<',';o<<catalog_quote(ids[i]);}
             o<<']';
         }
