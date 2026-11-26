@@ -16,6 +16,9 @@ using Entries=std::map<std::string,Entry>;
 struct AuditRecord {
     std::string id,name,format,status,detail,payload,kind,assessment,notes;
     std::uint64_t source_bytes{},payload_bytes{};
+    // Package-local locators, not new public resource IDs.
+    std::string original_entry,fallback_entry,atlas_entry;
+    std::uint64_t original_offset{},atlas_frames{};
 };
 struct PackageSummary {
     std::string category;
@@ -31,7 +34,13 @@ bool safe_entry(std::string_view);
 std::vector<DatasetPackage> dataset_packages(std::string_view);
 PackageSummary validate_package(const Entries&,std::string_view expected_category);
 void validate_dataset(std::string_view,const std::map<std::string,PackageSummary>&);
-struct AuditReport {std::string summary,records_tsv;};
+struct AuditReport {std::string summary,records_tsv,catalog_json;};
+// Optional v1 extension: deterministic dataset-wide lookup index derived
+// exclusively from validated package manifests.
+bool has_resource_catalog(std::string_view root);
+std::string resource_catalog(std::string_view root,const std::map<std::string,PackageSummary>&);
+void validate_resource_catalog(std::string_view catalog,std::string_view root,
+                               const std::map<std::string,PackageSummary>&);
 struct SourceRecord {std::string id,name,format,category;std::uint64_t size{};};
 // SourceRecord id/name are original byte strings, matching pack::stable_id.
 AuditReport audit_report(std::string_view root,const std::map<std::string,PackageSummary>&,
