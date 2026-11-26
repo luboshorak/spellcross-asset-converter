@@ -135,6 +135,7 @@ PackageSummary validate_package(const Entries& entries,std::string_view expected
     }
     std::map<std::string,std::set<std::string>> owners;
     std::map<std::string,std::uint64_t> frame_counts;
+    std::set<std::string> placeholders;
     for(auto& g:j.at("graphics").arr()){
         auto name=g.str();if(!graphics.insert(name).second)fail("Duplicate atlas manifest");
         derived.insert(name);
@@ -160,6 +161,12 @@ PackageSummary validate_package(const Entries& entries,std::string_view expected
             if(ordinal!=frame_counts[id]++)fail("Non-contiguous atlas frame ordinal: "+id);
             owners[id].insert(name);++out.frames;out.pixels+=w*h;
             auto& row=out.audit_records.at(audit_index.at(id));
+            if(auto marker=f.get("synthetic_placeholder");marker&&marker->boolean()){
+                if(row.status!="failed"||row.format!="DTA"||out.category!="terrain"||
+                   !row.name.ends_with("DEVAST.FS::DMA0_270.DTA")||row.source_bytes!=2248||
+                   ordinal!=0||w!=80||h!=1||!placeholders.insert(id).second)
+                    fail("Invalid damaged terrain placeholder: "+id);
+            }
             if(row.format=="FSU-SPRITE"){
                 if(!a.get("fsu_layout"))row.notes="Missing FSU layout";
                 if(auto error=a.get("fsu_layout_error"))row.notes="FSU layout error: "+error->str();
@@ -191,6 +198,13 @@ PackageSummary validate_package(const Entries& entries,std::string_view expected
         auto& row=out.audit_records.at(audit_index.at(id));
         if(graphics.contains(p)){
             if(!owners[id].contains(p))fail("Missing atlas frames: "+id);
+            if(placeholders.contains(id)){
+                if(frame_counts[id]!=1)fail("Placeholder has extra frames: "+id);
+                row.kind="synthetic-placeholder";row.assessment="legacy-required";
+                row.notes="Known damaged source; explicit transparent sentinel, original bytes retained, not an authentic decoded graphic";
+                continue;
+            }
+            if(row.status!="converted")fail("Non-converted record has unmarked atlas frames: "+id);
             row.kind="indexed-atlas";
             if(row.format=="FSU-SPRITE"){
                 row.assessment="semantic-review";

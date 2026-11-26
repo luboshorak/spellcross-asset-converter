@@ -7,6 +7,7 @@
 #include <fstream>
 #include <iomanip>
 #include <limits>
+#include <memory>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -299,11 +300,33 @@ Inventory scan(const fs::path& source) {
     std::stable_sort(out.assets.begin(),out.assets.end(),[](const Asset& a,const Asset& b){return a.name<b.name;});
     return out;
 }
+namespace {
+thread_local bool preview_session_active=false;
+thread_local std::unique_ptr<Reader> preview_reader;
+thread_local fs::path preview_path;
+}
+PreviewSession::PreviewSession(){
+    if(preview_session_active)throw std::runtime_error("Nested preview session");
+    preview_session_active=true;
+}
+PreviewSession::~PreviewSession(){preview_reader.reset();preview_path.clear();preview_session_active=false;}
 std::vector<std::uint8_t> preview(const Asset& a,std::size_t limit) {
-    Reader r(a.backing);
-    bounds(a.offset,a.size,r.size);
+    std::unique_ptr<Reader> temporary;
+    Reader* r=nullptr;
+    if(preview_session_active){
+        if(!preview_reader||preview_path!=a.backing){
+            preview_reader.reset();
+            preview_reader=std::make_unique<Reader>(a.backing);
+            preview_path=a.backing;
+        }
+        r=preview_reader.get();
+    }else{
+        temporary=std::make_unique<Reader>(a.backing);
+        r=temporary.get();
+    }
+    bounds(a.offset,a.size,r->size);
     std::vector<std::uint8_t> data(static_cast<std::size_t>(std::min<U>(a.size,limit)));
-    r.read(a.offset,data.data(),data.size());
+    r->read(a.offset,data.data(),data.size());
     return data;
 }
 static std::string safe_name(const std::string& logical) {

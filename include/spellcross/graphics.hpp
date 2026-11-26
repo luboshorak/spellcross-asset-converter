@@ -26,6 +26,11 @@ struct Palette {
 // Unknown entries remain explicitly marked and shown as grayscale.
 Palette tactical_palette(const Inventory&);
 Palette asset_palette(const Inventory&,const Asset&,const Palette&);
+// Export-only index, retaining original inventory order and selection rules.
+Inventory palette_inventory(const Inventory&);
+// A narrowly recognized damaged retail asset receives a synthetic transparent
+// sentinel, never a successful decode or a claim of original geometry.
+std::optional<Sprite> damaged_terrain_placeholder(const Asset&,std::span<const std::uint8_t>);
 std::optional<Sprite> decode_image(const Asset&,std::span<const std::uint8_t>);
 // Diagnostic-only raw dimension candidates; never used to mark graphics decoded.
 std::string graphics_evidence(std::span<const std::uint8_t>);
@@ -43,6 +48,7 @@ using LayerPath=std::vector<LayerStep>;
 bool can_expand(const Asset&,const LayerPath&);
 Bytes layer_bytes(const Asset&,const LayerPath&,std::size_t limit=64*1024*1024);
 std::vector<LayerStep> layer_children(const Asset&,const LayerPath&);
+std::vector<LayerStep> animation_frames(const Asset&,std::span<const std::uint8_t>);
 std::optional<Sprite> layer_image(const Asset&,const LayerPath&,std::span<const std::uint8_t>);
 bool layer_text(const Asset&,const LayerPath&,std::span<const std::uint8_t>);
 // Sidecar metadata for lossless sprite reconstruction. The index and mask

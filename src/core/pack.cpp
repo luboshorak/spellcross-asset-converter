@@ -47,7 +47,6 @@ std::string stable_id(const Asset& a,std::size_t occurrence){
 }
 Atlas::Atlas(int side):side_(side){
     if(side<1||side>4096)throw std::runtime_error("Invalid atlas page size");
-    indices_.resize(std::size_t(side)*side);opacity_.resize(indices_.size());
 }
 std::optional<Rect> Atlas::add(const Sprite& s){
     if(s.width<=0||s.height<=0||s.width>side_||s.height>side_)return std::nullopt;
@@ -56,6 +55,7 @@ std::optional<Rect> Atlas::add(const Sprite& s){
     int x=x_,y=y_,row=row_;
     if(x+s.width>side_){x=0;y+=row;row=0;}
     if(y+s.height>side_)return std::nullopt;
+    if(indices_.empty()){indices_.resize(std::size_t(side_)*side_);opacity_.resize(indices_.size());}
     Rect r{x,y,s.width,s.height};
     for(int j=0;j<s.height;++j){
         auto src=std::size_t(j)*s.width,dst=std::size_t(y+j)*side_+x;

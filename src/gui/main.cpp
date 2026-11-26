@@ -19,6 +19,8 @@
 #include <set>
 #include <wx/sound.h>
 #include <chrono>
+#include <future>
+#include <thread>
 #include <wx/splitter.h>
 #include <wx/treectrl.h>
 #include <wx/scrolwin.h>
@@ -808,14 +810,15 @@ class Frame final : public wxFrame {
         std::vector<wxString> args={"-nostdin","-hide_banner","-loglevel","error","-y","-f","rawvideo","-pixel_format","rgb24",
             "-video_size",w(dimensions),"-framerate",w(frame_rate),"-i","frames.rgb"};
         if(pcm)args.insert(args.end(),{"-i","audio.wav"});
-        args.insert(args.end(),{"-map","0:v:0","-c:v","ffv1","-level","3","-pix_fmt","bgr0","-threads","1"});
+        args.insert(args.end(),{"-map","0:v:0","-c:v","ffv1","-level","3","-pix_fmt","bgr0","-threads",w(std::to_string(std::clamp(std::thread::hardware_concurrency(),1u,4u))),"-slices","4"});
         if(pcm)args.insert(args.end(),{"-map","1:a:0","-c:a","flac","-sample_fmt","s16"});
         args.insert(args.end(),{"-map_metadata","-1","movie.mkv"});
         run_media(ffmpeg,dir,std::move(args));
-        run_media(ffmpeg,dir,{"-nostdin","-hide_banner","-loglevel","error","-y","-i","movie.mkv","-map","0:v:0","-vsync","0","-f","rawvideo","-pix_fmt","rgb24","verified.rgb"});
+        std::vector<wxString> verify_args={"-nostdin","-hide_banner","-loglevel","error","-y","-i","movie.mkv","-map","0:v:0","-vsync","0","-f","rawvideo","-pix_fmt","rgb24","verified.rgb"};
+        if(pcm)verify_args.insert(verify_args.end(),{"-map","0:a:0","-c:a","pcm_s16le","verified.wav"});
+        run_media(ffmpeg,dir,std::move(verify_args));
         same_file(dir/"frames.rgb",dir/"verified.rgb");
         if(pcm){
-            run_media(ffmpeg,dir,{"-nostdin","-hide_banner","-loglevel","error","-y","-i","movie.mkv","-map","0:a:0","-c:a","pcm_s16le","verified.wav"});
             auto check=sc::decode_sample(a,read_media(dir/"verified.wav",256u*1024u*1024u));
             if(!check||check->rate!=pcm->rate||check->channels!=pcm->channels||check->samples!=pcm->samples)
                 throw std::runtime_error("Movie audio round-trip mismatch");
@@ -892,6 +895,15 @@ class Frame final : public wxFrame {
         std::size_t total=0;for(auto& [key,items]:packages)total+=items.size();if(!total)return;
         std::filesystem::path dest;
         try{
+            using Clock=std::chrono::steady_clock;
+            const auto start=Clock::now();
+            auto last_ui=start;
+            std::ostringstream timings;
+            timings.imbue(std::locale::classic());
+            auto seconds=[](auto duration){return std::chrono::duration<double>(duration).count();};
+            sc::PreviewSession source_session;
+            const auto palette_sources=sc::palette_inventory(inv);
+            std::map<std::string,sc::Palette> terrain_palettes;
             dest=fresh_dir(path(d.GetPath()),"Spellcross-PAK-");
             wxProgressDialog progress("Modern PAK conversion","Converting logical packages...",static_cast<int>(total),this,wxPD_APP_MODAL|wxPD_CAN_ABORT|wxPD_AUTO_HIDE);
             std::size_t done=0,converted=0,decoded=0,raw=0,failed=0,containers=0,pages=0,frames=0;
@@ -905,6 +917,7 @@ class Frame final : public wxFrame {
             for(std::size_t i=0;i<inv.warnings.size();++i){if(i)root<<',';root<<json(inv.warnings[i]);}
             root<<"],\"packages\":[\n";bool first_pack=true;
             for(auto& [category,items]:packages){
+                const auto package_start=Clock::now();
                 if(!first_pack)root<<",\n";first_pack=false;
                 const auto filename=category+".pak";
                 wxFFileOutputStream file(w(sc::utf8(dest/filename)));
@@ -950,9 +963,39 @@ class Frame final : public wxFrame {
                         zip.SetLevel(6);
                         ++pages;++page;atlas=sc::pack::Atlas();
                     };
-                    for(auto i:group_ids){
+                    // Bounded parallel decoding of the dominant FSU workload.
+                    // Consume in original ordinal order; only this thread
+                    // touches wxWidgets, ZIP output, palette IDs and atlases.
+                    struct Prepared {std::optional<sc::Sprite> image;std::string error;};
+                    constexpr std::size_t batch_size=32;
+                    const auto workers=std::clamp(std::thread::hardware_concurrency(),1u,4u);
+                    std::vector<Prepared> batch;
+                    for(std::size_t pos=0;pos<group_ids.size();++pos){
+                        const auto i=group_ids[pos];
                         const auto& a=inv.assets[i];
-                        if(!progress.Update(static_cast<int>(done),w(a.name)))throw std::runtime_error("Cancelled; incomplete output removed");
+                        if(done==0||Clock::now()-last_ui>=std::chrono::milliseconds(100)||sc::is_video(a)){
+                            if(!progress.Update(static_cast<int>(done),w(a.name)))throw std::runtime_error("Cancelled; incomplete output removed");
+                            last_ui=Clock::now();
+                        }
+                        if(fsu_group&&pos%batch_size==0){
+                            auto count=std::min(batch_size,group_ids.size()-pos);
+                            batch.clear();batch.resize(count);
+                            auto prepare=[&](std::size_t first,std::size_t last){
+                                sc::PreviewSession session;
+                                for(auto j=first;j<last;++j)try{
+                                    const auto& asset=inv.assets[group_ids[pos+j]];
+                                    auto data=sc::decode_asset(asset);
+                                    batch[j].image=sc::decode_image(asset,data);
+                                    if(!batch[j].image)throw std::runtime_error("Unsupported FSU sprite");
+                                }catch(const std::exception& e){batch[j].image.reset();batch[j].error=e.what();}
+                            };
+                            // The main thread already owns its source session.
+                            std::vector<std::future<void>> jobs;
+                            const auto chunk=(count+workers-1)/workers;
+                            for(std::size_t first=0;first<count;first+=chunk)
+                                jobs.push_back(std::async(std::launch::async,prepare,first,std::min(count,first+chunk)));
+                            for(auto& job:jobs)job.get();
+                        }
                         std::string status="raw",detail="Format not yet converted",payload;
                         std::string original_path;std::uint64_t relative=0;
                         if(auto found=container_paths.find(i);found!=container_paths.end()){
@@ -968,7 +1011,7 @@ class Frame final : public wxFrame {
                         }
                         auto base="records/"+std::to_string(i)+"/";
                         std::vector<sc::Sprite> images;
-                        bool font_asset=false;
+                        bool font_asset=false,synthetic=false;
                         MediaWork media;
                         bool movie_output=false;
                         std::string font_meta;
@@ -982,6 +1025,16 @@ class Frame final : public wxFrame {
                                     add_text("movie.json",convert_movie(a,media.dir,ffmpeg));
                                     movie_output=true;status="converted";detail="FFV1/FLAC MKV; exact decoded RGB and PCM verified";payload=base+"movie.json";
                                 }
+                            }else if(fsu_group){
+                                auto& result=batch[pos%batch_size];
+                                if(!result.image)throw std::runtime_error(result.error);
+                                images.push_back(std::move(*result.image));
+                                auto& im=images.front();
+                                if(im.width<=0||im.height<=0||im.width>2048||im.height>2048||
+                                   im.indices.size()!=std::size_t(im.width)*im.height||im.opaque.size()!=im.indices.size())
+                                    throw std::runtime_error("Image geometry exceeds atlas limits or is empty");
+                                status="converted";detail="Indexed pixels and geometry; original semantics retained in source";
+                                payload=prefix+"frames.json";
                             }else if(a.size<=64u*1024u*1024u){
                                 auto data=sc::decode_asset(a);
                                 auto music=sc::music_kind(data);
@@ -1031,7 +1084,7 @@ class Frame final : public wxFrame {
                                       <<",\"default_height\":"<<font->default_height<<",\"glyph_count\":"<<images.size()<<"}";
                                     font_meta=fm.str();
                                 }else if(a.format=="PNM"||a.format=="ANM"){
-                                    auto children=sc::layer_children(a,{});
+                                    auto children=sc::animation_frames(a,data);
                                     std::size_t pixels=0;
                                     for(auto& child:children){
                                         sc::LayerPath chain{child};
@@ -1044,6 +1097,8 @@ class Frame final : public wxFrame {
                                         pixels+=im->indices.size();images.push_back(std::move(*im));
                                     }
                                     if(images.empty())throw std::runtime_error("Empty animation");
+                                }else if(auto placeholder=sc::damaged_terrain_placeholder(a,data)){
+                                    synthetic=true;images.push_back(std::move(*placeholder));
                                 }else if(auto im=sc::decode_image(a,data))images.push_back(std::move(*im));
                                 else if(sc::is_text_asset(a,data)){
                                     const auto decoded_text=decode_text(narrative(a)?sc::narrative_display(data):data,&a);auto utf=decoded_text.utf8_str();add_text("text.txt",std::string(utf.data(),utf.length()));
@@ -1064,12 +1119,22 @@ class Frame final : public wxFrame {
                                     status="converted";detail="Indexed pixels and geometry; original semantics retained in source";
                                     payload=prefix+"frames.json";
                                     if(font_asset){add_text("font.json",font_meta);payload=base+"font.json";detail="Bitmap font glyphs, code positions and spacing";}
+                                    if(synthetic){
+                                        status="failed";detail="Known damaged retail terrain; synthetic transparent sentinel, original retained";
+                                        log("PAK PLACEHOLDER: "+w(a.name));
+                                    }
                                 }
                             }else detail="Asset exceeds conversion memory limit";
                         }catch(const std::exception& e){images.clear();derived.clear();movie_output=false;status="failed";detail=e.what();payload.clear();log("PAK: "+w(a.name)+": "+w(detail));}
                         if(!images.empty()){
                             if(fsu_group)converted_fsu_ids.push_back(ids[i]);
-                            auto frame_palette=sc::asset_palette(inv,a,palette);
+                            sc::Palette frame_palette;
+                            if(category=="terrain"){
+                                const auto key=sc::block_name(a);
+                                auto found=terrain_palettes.find(key);
+                                if(found==terrain_palettes.end())found=terrain_palettes.emplace(key,sc::asset_palette(palette_sources,a,palette)).first;
+                                frame_palette=found->second;
+                            }else frame_palette=sc::asset_palette(palette_sources,a,palette);
                             if(font_asset){frame_palette={};frame_palette.rgb[3]=frame_palette.rgb[4]=frame_palette.rgb[5]=255;frame_palette.known[0]=frame_palette.known[1]=true;}
                             const auto palette_id=palettes.intern(frame_palette);
                             for(std::size_t frame=0;frame<images.size();++frame){
@@ -1080,7 +1145,9 @@ class Frame final : public wxFrame {
                                 graphic_records<<"{\"id\":"<<json(ids[i])<<",\"frame\":"<<frame<<",\"page\":"<<page
                                     <<",\"rect\":["<<rect->x<<','<<rect->y<<','<<rect->width<<','<<rect->height<<"]"
                                     <<",\"origin\":["<<im.x<<','<<im.y<<"],\"palette\":"<<palette_id
-                                    <<",\"shadow_index\":"<<(im.shadow_index?"253":"null")<<",\"opaque_zero_display_index\":"<<(im.opaque_zero_uses_254?"254":"null")<<",\"trailing_bytes\":"<<im.trailing_bytes<<"}";
+                                    <<",\"shadow_index\":"<<(im.shadow_index?"253":"null")<<",\"opaque_zero_display_index\":"<<(im.opaque_zero_uses_254?"254":"null")<<",\"trailing_bytes\":"<<im.trailing_bytes;
+                                if(synthetic)graphic_records<<",\"synthetic_placeholder\":true";
+                                graphic_records<<"}";
                                 pixel_total+=im.indices.size();++frames;
                             }
                         }
@@ -1145,6 +1212,7 @@ class Frame final : public wxFrame {
                 root<<"{\"file\":"<<json(filename)<<",\"category\":"<<json(category)<<",\"records\":"<<items.size()
                     <<",\"converted\":"<<pack_converted<<",\"decoded\":"<<pack_decoded<<",\"raw\":"<<pack_raw
                     <<",\"failed\":"<<pack_failed<<",\"containers\":"<<pack_containers<<"}";
+                timings<<filename<<": "<<std::fixed<<std::setprecision(3)<<seconds(Clock::now()-package_start)<<" s\n";
             }
             root<<"\n],\"coverage_by_format\":{";
             bool first_format=true;
@@ -1162,7 +1230,12 @@ class Frame final : public wxFrame {
                 const auto& a=inv.assets[i];
                 expected_source.push_back({ids[i],a.name,a.format,category,a.size});
             }
+            const auto verification_start=Clock::now();
             auto verified=check_dataset(dest,[&](const std::string& p){return progress.Pulse("Verifying "+w(p));},&expected_source);
+            timings<<"Read-back validation: "<<seconds(Clock::now()-verification_start)<<" s\n"
+                   <<"Total: "<<seconds(Clock::now()-start)<<" s\n";
+            write_manifest_file(dest/"pak-performance.txt",timings.str());
+            log(w(timings.str()));
             write_manifest_file(dest/"pak-audit.txt",verified.summary);
             write_manifest_file(dest/"pak-audit.tsv",verified.records_tsv);
             validation->ChangeValue(w(verified.summary));log(w(verified.summary));
@@ -1535,7 +1608,7 @@ public:
         Bind(wxEVT_MENU,[this](wxCommandEvent&){analyze();},scan_id);
         Bind(wxEVT_MENU,[this](wxCommandEvent&){export_manifest();},save_manifest);
         Bind(wxEVT_MENU,[this](wxCommandEvent&){Close();},wxID_EXIT);
-        Bind(wxEVT_MENU,[this](wxCommandEvent&){wxMessageBox("Spellcross Asset Converter 0.9.11.1\nPart of Spellcross Reloaded\nMIT license\nCopyright (c) 2026 Luboš Horák\nSpellcross Reloaded by Luboš Horák; foundations by Stanislav Mašláň.\nhttps://github.com/luboshorak/spellcross-reloaded\nCAN decoder: CPAL-1.0; libsmacker: LGPL-2.1-or-later.","About",wxOK|wxICON_INFORMATION,this);},wxID_ABOUT);
+        Bind(wxEVT_MENU,[this](wxCommandEvent&){wxMessageBox("Spellcross Asset Converter 0.9.11.2\nPart of Spellcross Reloaded\nMIT license\nCopyright (c) 2026 Luboš Horák\nSpellcross Reloaded by Luboš Horák; foundations by Stanislav Mašláň.\nhttps://github.com/luboshorak/spellcross-reloaded\nCAN decoder: CPAL-1.0; libsmacker: LGPL-2.1-or-later.","About",wxOK|wxICON_INFORMATION,this);},wxID_ABOUT);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){choose(true);},open_dir);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){choose(false);},open_file);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){analyze();},scan_id);

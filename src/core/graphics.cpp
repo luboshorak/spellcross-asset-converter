@@ -271,6 +271,20 @@ static WindowsIcon windows_icon(std::span<const std::uint8_t> d){
     if(end>off+len)throw std::runtime_error("Truncated Windows ICO image");
     return {w,h,colors,palette,pixels,mask,stride,mask_stride,end};
 }
+Inventory palette_inventory(const Inventory& inv){
+    Inventory out;
+    // Every bank read by asset_palette is 30, 192, 384, 576+ or 768
+    // bytes, and INFO portrait banks may have extra trailing bytes.
+    // Keep PAL/NRM candidates regardless of size, plus any named banks
+    // selected by raw_ui (which can use exact-size entries by name).
+    for(const auto& a:inv.assets){
+        auto n=upper_name(a);
+        if(a.format=="PAL"||a.format=="NRM"||n.ends_with(".PAL")||
+           n=="PALETA.NRM"||a.size==30||a.size==192||a.size==384||a.size==768)
+            out.assets.push_back(a);
+    }
+    return out;
+}
 Palette asset_palette(const Inventory& inv,const Asset& a,const Palette& tactical){
     auto n=upper_name(a);
     if(windows_icon_asset(a)){
@@ -375,6 +389,13 @@ Palette asset_palette(const Inventory& inv,const Asset& a,const Palette& tactica
         }
     }
     return p;
+}
+std::optional<Sprite> damaged_terrain_placeholder(const Asset& a,std::span<const std::uint8_t> d){
+    if(a.format!="DTA"||!in_archive(a,"DEVAST.FS")||upper_name(a)!="DMA0_270.DTA"||
+       d.size()!=2248||!std::all_of(d.begin(),d.begin()+186,[](auto b){return b==0;}))return std::nullopt;
+    Sprite s;s.width=80;s.height=1;s.shadow_index=false;
+    s.indices.resize(80);s.opaque.resize(80);
+    return s;
 }
 static bool terrain_archive(const Asset& a){
     return in_archive(a,"T11.FS")||in_archive(a,"PUST.FS")||in_archive(a,"DEVAST.FS");
@@ -696,6 +717,10 @@ Bytes layer_bytes(const Asset& a,const LayerPath& steps,std::size_t limit){
         if(data.size()!=step.size)throw std::runtime_error("Layer changed; rescan the source");
     }
     return data;
+}
+std::vector<LayerStep> animation_frames(const Asset& a,std::span<const std::uint8_t> data){
+    if(a.format!="PNM"&&a.format!="ANM")return {};
+    return pnm_layers(data,a.format=="ANM");
 }
 std::vector<LayerStep> layer_children(const Asset& a,const LayerPath& steps){
     if(!can_expand(a,steps))return {};

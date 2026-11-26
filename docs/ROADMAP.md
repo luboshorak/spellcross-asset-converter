@@ -9,6 +9,7 @@ Spellcross Asset Converter is a standalone project. All implementation work for 
 | Version | Scope | Acceptance criteria |
 |---|---|---|
 | 0.9.11 | Full PAK export audit | Real read-back inventory; per-record conversion reason and payload kind; original/derived storage accounting; source inventory matching when exporting; run on actual data before declaring coverage complete. |
+| 0.9.11.2 | Performance optimization | Preserve complete inventory and decoded payloads while reducing export time; measure package and validation time; mark damaged retail tile fallback explicitly. |
 | 0.9.12 | Finalize PAK structure and categorization | Explicit logical ownership, stable IDs, clear schema contracts, duplication/fallback accounting, documented archive layout. |
 | 0.9.13 | Complete game metadata | Review missing animation timing/origins, palette contexts, fonts, unit fields, map layers, campaign/research/formation data and audiovisual metadata; record every unresolved field. |
 | 0.9.14 | Cross-resource validation | Validate references between maps, units, graphics, animations, sounds, scripts, campaigns and language resources; distinguish missing, ambiguous and optional links. |
@@ -17,4 +18,4 @@ Spellcross Asset Converter is a standalone project. All implementation work for 
 
 ## Current gate
 
-0.9.10 merged; its build passed. Full retail PAK export is not yet demonstrated. 0.9.11 adds the audit machinery to obtain the missing evidence, not the evidence itself. The first actual full dataset audit is the input for the next milestone; do not jump ahead to SR integration. Keep `runtime_ready: false` until the data contract and semantic completeness have been demonstrated; runtime integration remains explicitly out of scope until separately authorized.
+0.9.11.1 completed a full Czech ISO export with successful structural validation and source inventory match: 32,643 records, 32,555 converted, 72 raw, 2 failed, 14 containers, 31,331 frames. User reported excessive export time. 0.9.11.2 is the performance milestone before PAK structure changes. Preserve the baseline coverage and exact modern payload content, except explicitly documented synthetic fallback and lossless media encoding/container differences. Full English export and semantic validation remain pending. Keep `runtime_ready: false` until the data contract and semantic completeness have been demonstrated; runtime integration remains explicitly out of scope until separately authorized.

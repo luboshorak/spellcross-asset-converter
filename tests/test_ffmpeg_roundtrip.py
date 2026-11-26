@@ -27,11 +27,11 @@ with tempfile.TemporaryDirectory() as work:
     ffmpeg("-f", "rawvideo", "-pixel_format", "rgb24", "-video_size", "32x24",
            "-framerate", "15", "-i", "frames.rgb", "-i", "audio.wav",
            "-map", "0:v:0", "-c:v", "ffv1", "-level", "3", "-pix_fmt", "bgr0",
-           "-threads", "1", "-map", "1:a:0", "-c:a", "flac", "-sample_fmt", "s16",
+           "-threads", "4", "-slices", "4", "-map", "1:a:0", "-c:a", "flac", "-sample_fmt", "s16",
            "-map_metadata", "-1", "movie.mkv")
     ffmpeg("-i", "movie.mkv", "-map", "0:v:0", "-vsync", "0", "-f", "rawvideo",
-           "-pix_fmt", "rgb24", "verified.rgb")
-    ffmpeg("-i", "movie.mkv", "-map", "0:a:0", "-c:a", "pcm_s16le", "verified.wav")
+           "-pix_fmt", "rgb24", "verified.rgb",
+           "-map", "0:a:0", "-c:a", "pcm_s16le", "verified.wav")
     assert (root / "verified.rgb").read_bytes() == rgb
     with wave.open(str(root / "verified.wav"), "rb") as stream:
         assert stream.getframerate() == 11025
