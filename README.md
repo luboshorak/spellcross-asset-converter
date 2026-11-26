@@ -108,3 +108,10 @@ The 80-pixel terrain tile decoder now consumes and validates all scanline groups
 ## 0.9.7 — Reloaded UI theme and layout
 
 The converter uses the Reloaded strategic UI palette, grid-painted panels and owner-drawn buttons, with a matching installed Fixedsys face when available (monospace fallback). Main and preview navigation use real buttons and a wxSimplebook instead of native notebook tab strips. Preview toolbar and export controls use equal-cell grids; the splitter limits interactive resizing to keep the preview usable. Validation actions stay above a scrollable report, so long audit output no longer displaces them. Native file dialogs, choices, tree, scrollbars and system menu remain OS widgets. This is a converter-only visual port; no SR or Build.ps1 changes. Windows and Linux GUI behavior still needs visual QA.
+
+## 0.9.8 — remaining retail graphics (first pass)
+
+- Recognize the five verified DOS filename/identifier records in COMMON.FS as text; keep the original compressed bytes.
+- Decode IBG_600, NAMELSTA, DIFFIC, GOTOLSTA, LED_OFF/ON and PATTERN using dimensions reconstructed from the English retail assets. Palette contexts and Czech visual parity are not yet verified.
+- Decode the loose SPELCROS.ICO as a Windows single-entry indexed 8-bit DIB with its own RGB palette and AND transparency mask, separately from the native game ICO scanlines.
+- Czech ISO-only assets (including MUSIC.FS and INSTALL.FS), ambiguous raw dimensions, INFOLSTA edition differences and DEVAST DMA0_270 remain open. No speculative classification or fabricated pixels.
