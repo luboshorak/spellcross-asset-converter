@@ -7,6 +7,11 @@
 #include <wx/progdlg.h>
 #include <wx/timer.h>
 #include <wx/image.h>
+#include <wx/zipstrm.h>
+#include <wx/wfstream.h>
+#include <wx/mstream.h>
+#include <wx/strconv.h>
+#include <array>
 #include <map>
 #include <optional>
 #include <limits>
@@ -39,7 +44,7 @@ void paint(wxWindow* p, bool dark=true) {
 }
 wxString number(std::uint64_t n) {return wxString::Format("%llu",static_cast<unsigned long long>(n));}
 enum {open_dir=wxID_HIGHEST+1,open_file,scan_id,export_one,export_all,save_manifest,
-    prev_id,next_id,play_id,zoom_in,zoom_out,zoom_fit,clear_id,png_one,png_group,validate_id,decoded_one};
+    prev_id,next_id,play_id,zoom_in,zoom_out,zoom_fit,clear_id,png_one,png_group,validate_id,decoded_one,batch_id};
 class ItemData final:public wxTreeItemData {
 public:
     std::size_t index;
@@ -94,8 +99,8 @@ wxImage sprite_image(const sc::Sprite& sprite,const sc::Palette& palette,int mod
     auto* rgb=image.GetData();auto* alpha=mode==0?image.GetAlpha():nullptr;
     for(std::size_t i=0;i<sprite.indices.size();++i){
         auto idx=sprite.indices[i];
-        for(int ch=0;ch<3;++ch)rgb[i*3+ch]=mode==1?idx:mode==2?sprite.opaque[i]:idx==253?0:palette.rgb[idx*3+ch];
-        if(alpha)alpha[i]=!sprite.opaque[i]?0:idx==253?128:255;
+        for(int ch=0;ch<3;++ch)rgb[i*3+ch]=mode==1?idx:mode==2?sprite.opaque[i]:sprite.shadow_index&&idx==253?0:palette.rgb[idx*3+ch];
+        if(alpha)alpha[i]=!sprite.opaque[i]?0:sprite.shadow_index&&idx==253?128:255;
     }
     return image;
 }
@@ -131,7 +136,11 @@ class Frame final : public wxFrame {
     wxTreeCtrl* tree{};
     wxNotebook* preview_tabs{};
     Canvas* graphic{};
-    wxTextCtrl *metadata{},*raw_hex{};
+    wxTextCtrl *metadata{},*raw_hex{},*text_view{};
+    wxChoice *block_choice{},*encoding_choice{};
+    wxButton* batch_button{};
+    std::map<std::string,std::vector<std::size_t>> blocks;
+    std::vector<std::string> block_keys;
     wxButton *prev_button{},*next_button{},*play_button{},*png_button{},*group_button{},*decoded_button{};
     wxTimer timer;
     std::vector<wxTreeItemId> nodes;
@@ -193,11 +202,11 @@ class Frame final : public wxFrame {
             validation->SetLabel("FS / FSU directory and member bounds checked during scan.\n"+
                 number(inv.warnings.size())+" warning(s). See Log for details.\n"+
                 "Use Validate compressed assets to check LZ and FSU decoding. Checksums are not yet implemented.");
-            refresh();
+            rebuild_blocks();refresh();
             SetStatusText("Inventory ready");
             tabs->SetSelection(1);
         } catch(const std::exception& e) {
-            stop_play();active.reset();inv={};refresh();
+            stop_play();active.reset();inv={};rebuild_blocks();refresh();
             stats->SetLabel("Scan failed. No active inventory.");
             validation->SetLabel("No inventory.");
             log("ERROR: "+w(e.what()));
@@ -205,6 +214,32 @@ class Frame final : public wxFrame {
             wxMessageBox(w(e.what()),"Cannot scan source",wxOK|wxICON_ERROR,this);
         }
         GetSizer()->Layout();
+    }
+    wxString decode_text(const sc::Bytes& data){
+        if(data.empty())return {};
+        const char* p=reinterpret_cast<const char*>(data.data());
+        auto enc=encoding_choice->GetStringSelection();
+        auto utf=wxString::FromUTF8(p,data.size());
+        if((enc=="Auto (UTF-8 / CP895)"||enc=="UTF-8")&&!utf.empty())return utf;
+        if(enc=="UTF-8")throw std::runtime_error("Invalid UTF-8");
+        if(enc=="CP852"||enc=="Windows-1250"||enc=="Windows-1252"){
+            wxCSConv conv(enc=="CP852"?"CP852":enc=="Windows-1250"?"windows-1250":"windows-1252");
+            wxString out(p,conv,data.size());
+            if(out.empty())throw std::runtime_error("Text conversion failed");
+            return out;
+        }
+        // Kamenicky DOS encoding, as used in the restoration tools.
+        static constexpr char32_t cp[]=U"\u010c\u00fc\u00e9\u010f\u00e4\u010e\u0164\u010d\u011b\u011a\u0139\u00cd\u013e\u013a\u00c4\u00c1\u00c9\u017e\u017d\u00f4\u00f6\u00d3\u016f\u00da\u00fd\u00d6\u00dc\u0160\u013d\u00dd\u0158\u0165\u00e1\u00ed\u00f3\u00fa\u0148\u0147\u016e\u00d4\u0161\u0159\u0155\u0154\u00bc\u00a7\u00ab\u00bb\u2591\u2592\u2593\u2502\u2524\u2561\u2562\u2556\u2555\u2563\u2551\u2557\u255d\u255c\u255b\u2510\u2514\u2534\u252c\u251c\u2500\u253c\u255e\u255f\u255a\u2554\u2569\u2566\u2560\u2550\u256c\u2567\u2568\u2564\u2565\u2559\u2558\u2552\u2553\u256b\u256a\u2518\u250c\u2588\u2584\u258c\u2590\u2580\u03b1\u00df\u0393\u03c0\u03a3\u03c3\u00b5\u03c4\u03a6\u0398\u03a9\u03b4\u221e\u03c6\u03b5\u2229\u2261\u00b1\u2265\u2264\u2320\u2321\u00f7\u2248\u00b0\u2219\u00b7\u221a\u207f\u00b2\u25a0 ";
+        static_assert(sizeof(cp)/sizeof(cp[0])==129);
+        wxString out;
+        for(auto b:data)out+=wxUniChar(static_cast<unsigned long>(b<128?b:cp[b-128]));
+        return out;
+    }
+    void rebuild_blocks(){
+        blocks.clear();block_keys.clear();block_choice->Clear();block_choice->Append("All game data");
+        for(std::size_t i=0;i<inv.assets.size();++i)blocks[sc::block_name(inv.assets[i])].push_back(i);
+        for(auto& [key,ids]:blocks){block_keys.push_back(key);block_choice->Append(key.empty()?wxString("Loose files"):w(key));}
+        block_choice->SetSelection(0);batch_button->Enable(!blocks.empty());
     }
     void stop_play(){timer.Stop();if(play_button)play_button->SetLabel("Play sequence");}
     void refresh() {
@@ -281,7 +316,7 @@ class Frame final : public wxFrame {
         active=a?std::optional<std::size_t>(a-inv.assets.data()):std::nullopt;
         export_button->Enable(a!=nullptr);
         png_button->Enable(false);group_button->Enable(false);decoded_button->Enable(false);
-        graphic->SetImage(wxImage());preview_box->Clear();raw_hex->Clear();metadata->Clear();
+        graphic->SetImage(wxImage());preview_box->Clear();raw_hex->Clear();metadata->Clear();text_view->Clear();
         sequence.clear();sequence_pos=0;
         if(!a){stop_play();selected_label->SetLabel("Select an asset.");prev_button->Enable(false);next_button->Enable(false);play_button->Enable(false);return;}
         sequence=sc::sprite_group_members(inv,*a);
@@ -296,15 +331,19 @@ class Frame final : public wxFrame {
             auto stored=sc::preview(*a);
             raw_hex->SetValue(hex(stored));
             auto data=stored;
-            if(a->format=="FSU-SPRITE"||a->format=="LZ"||a->format=="LZ0"){
+            if(sc::compressed(*a)){
                 data=sc::decode_asset(*a);decoded_button->Enable(true);
                 details+="\nDecoded bytes: "+number(data.size());
             }
             preview_box->SetValue(hex(data));
-            if(a->format=="FSU-SPRITE"){
-                auto s=sc::decode_sprite(data);
+            auto full=data;
+            if(!sc::compressed(*a)&&a->size>data.size()&&a->size<=64*1024*1024&&
+                (a->format=="ICO"||a->format=="BTN"||a->format=="CUR"||a->format=="GFK"||sc::is_text_asset(*a,data)))
+                full=sc::decode_asset(*a);
+            if(auto decoded=sc::decode_image(*a,full)){
+                auto s=std::move(*decoded);
                 if(s.height>0){
-                    graphic->SetImage(sprite_image(s,palette));png_button->Enable(true);group_button->Enable(true);
+                    graphic->SetImage(sprite_image(s,sc::asset_palette(inv,*a,palette)));png_button->Enable(a->format=="FSU-SPRITE");group_button->Enable(a->format=="FSU-SPRITE");preview_tabs->SetSelection(0);
                 }
                 details+="\nDimensions: "+number(s.width)+" x "+number(s.height)+
                     "\nOrigin: "+wxString::Format("%d, %d",s.x,s.y)+
@@ -317,9 +356,12 @@ class Frame final : public wxFrame {
                 wxImage image(256,((n+15)/16)*16);
                 image.SetRGB(wxRect(0,0,image.GetWidth(),image.GetHeight()),36,47,35);
                 for(int i=0;i<n;++i)image.SetRGB(wxRect((i%16)*16,(i/16)*16,16,16),data[i*3],data[i*3+1],data[i*3+2]);
-                graphic->SetImage(image);
-            }
-        }catch(const std::exception& e){details+="\nERROR: "+w(e.what());log("ERROR: "+w(e.what()));}
+                graphic->SetImage(image);preview_tabs->SetSelection(0);
+            }else if(sc::is_text_asset(*a,full)&&full.size()==a->size){
+                text_view->SetValue(decode_text(full));preview_tabs->SetSelection(4);
+            }else if(sc::compressed(*a)){preview_tabs->SetSelection(2);}
+            else{preview_tabs->SetSelection(1);}
+        }catch(const std::exception& e){details+="\nERROR: "+w(e.what());log("ERROR: "+w(e.what()));preview_tabs->SetSelection(3);}
         metadata->SetValue(details);
     }
     void step(int direction){
@@ -361,6 +403,115 @@ class Frame final : public wxFrame {
             log("Decoded data exported: "+w(sc::utf8(dest)));
             wxMessageBox(w(sc::utf8(dest)),"Decoded export",wxOK|wxICON_INFORMATION,this);
         }catch(const std::exception& e){log("ERROR: "+w(e.what()));wxMessageBox(w(e.what()),"Export failed",wxOK|wxICON_ERROR,this);}
+    }
+    static void zip_bytes(wxZipOutputStream& z,const wxString& name,const void* bytes,std::size_t size){
+        if(!z.PutNextEntry(name))throw std::runtime_error("Cannot create ZIP entry");
+        if(size){z.Write(bytes,size);if(z.LastWrite()!=size||!z.IsOk())throw std::runtime_error("ZIP write failed");}
+        if(!z.CloseEntry())throw std::runtime_error("ZIP entry close failed");
+    }
+    static void zip_string(wxZipOutputStream& z,const wxString& name,const std::string& value){
+        zip_bytes(z,name,value.data(),value.size());
+    }
+    static void zip_original(wxZipOutputStream& z,const wxString& name,const sc::Asset& a){
+        std::ifstream in(a.backing,std::ios::binary);
+        if(!in||!in.seekg(static_cast<std::streamoff>(a.offset)))throw std::runtime_error("Cannot read original asset");
+        if(!z.PutNextEntry(name))throw std::runtime_error("Cannot create original ZIP entry");
+        std::array<char,65536> buffer{};
+        for(std::uint64_t left=a.size;left;){
+            auto n=static_cast<std::size_t>(std::min<std::uint64_t>(left,buffer.size()));
+            if(!in.read(buffer.data(),static_cast<std::streamsize>(n)))throw std::runtime_error("Original asset read failed");
+            z.Write(buffer.data(),n);
+            if(z.LastWrite()!=n||!z.IsOk())throw std::runtime_error("Original ZIP write failed");
+            left-=n;
+        }
+        if(!z.CloseEntry())throw std::runtime_error("Original ZIP entry close failed");
+    }
+    static sc::Bytes png_bytes(const wxImage& im){
+        wxMemoryOutputStream out;
+        if(!im.SaveFile(out,wxBITMAP_TYPE_PNG))throw std::runtime_error("PNG encoding failed");
+        sc::Bytes bytes(out.GetSize());out.CopyTo(bytes.data(),bytes.size());return bytes;
+    }
+    static std::string tsv(const std::string& value){
+        std::string out;
+        for(char ch:value){if(ch=='\\')out+="\\\\";else if(ch=='\t')out+="\\t";else if(ch=='\r')out+="\\r";else if(ch=='\n')out+="\\n";else out+=ch;}
+        return out;
+    }
+    void convert_blocks(){
+        stop_play();if(blocks.empty())return;
+        wxDirDialog d(this,"Choose destination for converted ZIP bundles");
+        if(d.ShowModal()!=wxID_OK)return;
+        std::vector<std::string> keys;
+        int choice=block_choice->GetSelection();
+        if(choice<=0)keys=block_keys;else keys.push_back(block_keys.at(static_cast<std::size_t>(choice-1)));
+        std::size_t total=0;for(auto& key:keys)total+=blocks.at(key).size();
+        if(!total)return;
+        std::filesystem::path dest;
+        try{
+            dest=fresh_dir(path(d.GetPath()),"Spellcross-modern-");
+            wxProgressDialog progress("Convert game data","Packaging archive blocks...",static_cast<int>(total),this,wxPD_APP_MODAL|wxPD_CAN_ABORT|wxPD_AUTO_HIDE);
+            std::size_t done=0,converted=0,decoded=0,raw=0,failed=0,block_number=0;
+            std::ostringstream catalogue;catalogue<<"zip\tlogical_block\tassets\n";
+            for(auto& key:keys){
+                const auto& ids=blocks.at(key);
+                std::string basename=key.empty()?"loose-files":key.substr(key.find_last_of("/\\")==std::string::npos?0:key.find_last_of("/\\")+1);
+                for(auto& ch:basename)if(!((ch>='a'&&ch<='z')||(ch>='A'&&ch<='Z')||(ch>='0'&&ch<='9')||ch=='-'||ch=='_'||ch=='.'))ch='_';
+                if(basename.size()>80)basename.resize(80);
+                std::string filename=std::to_string(++block_number)+"_"+basename+".zip";
+                wxFFileOutputStream file(w(sc::utf8(dest/filename)));
+                if(!file.IsOk())throw std::runtime_error("Cannot open ZIP output");
+                wxZipOutputStream zip(file);
+                zip.SetFormat(wxZIP_FORMAT_ZIP64);
+                std::ostringstream manifest;manifest<<"id\tlogical_name\tformat\tstored_size\tstatus\tdetail\n";
+                for(auto id:ids){
+                    const auto& a=inv.assets[id];
+                    if(done%16==0&&!progress.Update(static_cast<int>(done),w(a.name)))throw std::runtime_error("Cancelled; incomplete export removed");
+                    wxString prefix="assets/"+number(id)+"/";
+                    zip_original(zip,prefix+"original.bin",a);
+                    std::string status="raw",detail="No modern decoder for this format";
+                    std::vector<std::pair<wxString,sc::Bytes>> derived;
+                    auto add_text=[&](const wxString& n,const std::string& v){derived.emplace_back(n,sc::Bytes(v.begin(),v.end()));};
+                    try{
+                        if(a.format=="FS"||a.format=="FSU"){detail="Original container retained with its catalogued members";}
+                        else if(a.size<=64*1024*1024){
+                            auto data=sc::decode_asset(a);
+                            if(auto image=sc::decode_image(a,data)){
+                                auto p=sc::asset_palette(inv,a,palette);
+                                const char* names[]={"preview.png","indices.png","opacity.png"};
+                                for(int i=0;i<3;++i)derived.emplace_back(names[i],png_bytes(sprite_image(*image,p,i)));
+                                add_text("sprite.json",sc::sprite_metadata(a,*image,p));
+                                status="converted";detail="Indexed image and metadata";
+                            }else if(sc::is_text_asset(a,data)){
+                                auto utf=decode_text(data).utf8_str();
+                                add_text("text.txt",std::string(utf.data(),utf.length()));
+                                status="converted";detail="UTF-8 text";
+                            }else if(a.format=="PAL"&&data.size()>=3&&data.size()<=768&&data.size()%3==0){
+                                std::ostringstream p;p<<"{\"rgb\":[";
+                                for(std::size_t i=0;i<data.size();++i){if(i)p<<',';p<<unsigned(data[i]);}p<<"]}\n";
+                                add_text("palette.json",p.str());status="converted";detail="RGB palette";
+                            }else if(sc::compressed(a)){derived.emplace_back("decoded.bin",std::move(data));status="decoded";detail="Decompressed; inner format not interpreted";}
+                        }else detail="Asset exceeds decoder memory limit; original retained";
+                    }catch(const std::exception& e){derived.clear();status="failed";detail=e.what();log("CONVERSION: "+w(a.name)+": "+w(detail));}
+                    for(auto& [name,bytes]:derived)zip_bytes(zip,prefix+name,bytes.data(),bytes.size());
+                    if(status=="converted")++converted;else if(status=="decoded")++decoded;else if(status=="failed")++failed;else ++raw;
+                    manifest<<id<<'\t'<<tsv(a.name)<<'\t'<<tsv(a.format)<<'\t'<<a.size<<'\t'<<status<<'\t'<<tsv(detail)<<'\n';
+                    ++done;
+                }
+                zip_string(zip,"manifest.tsv",manifest.str());
+                if(!zip.Close())throw std::runtime_error("ZIP finalization failed");
+                if(!file.Close())throw std::runtime_error("ZIP file close failed");
+                catalogue<<filename<<'\t'<<tsv(key.empty()?"(loose files)":key)<<'\t'<<ids.size()<<'\n';
+            }
+            std::ofstream index(dest/"blocks.tsv",std::ios::binary);index<<catalogue.str();index.close();
+            if(!index)throw std::runtime_error("Block catalogue write failed");
+            std::ofstream warnings(dest/"scan-warnings.txt",std::ios::binary);for(auto& warning:inv.warnings)warnings<<warning<<'\n';warnings.close();
+            if(!warnings)throw std::runtime_error("Warning log write failed");
+            progress.Update(static_cast<int>(total));
+            auto summary=number(keys.size())+" ZIP bundle(s)\n"+number(converted)+" converted, "+number(decoded)+" decoded, "+number(raw)+" original-only, "+number(failed)+" conversion failures (original retained).\n"+w(sc::utf8(dest));
+            log(summary);wxMessageBox(summary,"Conversion finished",wxOK|wxICON_INFORMATION,this);
+        }catch(const std::exception& e){
+            if(!dest.empty()){std::error_code ec;std::filesystem::remove_all(dest,ec);if(ec)log("ERROR: Could not remove incomplete export "+w(sc::utf8(dest)));}
+            log("ERROR: "+w(e.what()));wxMessageBox(w(e.what()),"Conversion interrupted",wxOK|wxICON_ERROR,this);
+        }
     }
     void validate_decoding(){
         stop_play();
@@ -429,7 +580,7 @@ public:
         auto* root=new wxBoxSizer(wxVERTICAL);SetSizer(root);
         auto* header=new wxPanel(this);paint(header,false);auto* hs=new wxBoxSizer(wxVERTICAL);header->SetSizer(hs);
         label(header,hs,"SPELLCROSS  /  ASSET CONVERTER",true);
-        label(header,hs,"RELOADED TOOLKIT   |   v0.3.0   |   Original data inventory");
+        label(header,hs,"RELOADED TOOLKIT   |   v0.4.0   |   Original data inventory");
         root->Add(header,0,wxEXPAND);
         tabs=new wxNotebook(this,wxID_ANY);root->Add(tabs,1,wxALL|wxEXPAND,10);
         wxBoxSizer* s;
@@ -471,7 +622,10 @@ public:
             auto* p=new wxTextCtrl(preview_tabs,wxID_ANY,"",wxDefaultPosition,wxDefaultSize,wxTE_MULTILINE|wxTE_READONLY|wxTE_DONTWRAP);
             paint(p,false);p->SetFont(wxFontInfo(10).Family(wxFONTFAMILY_TELETYPE));preview_tabs->AddPage(p,title);return p;
         };
-        raw_hex=text_page("Stored HEX");preview_box=text_page("Decoded HEX");metadata=text_page("Metadata");
+        raw_hex=text_page("Stored HEX");preview_box=text_page("Decoded HEX");metadata=text_page("Metadata");text_view=text_page("Text");
+        encoding_choice=new wxChoice(right,wxID_ANY);for(auto enc:{"Auto (UTF-8 / CP895)","UTF-8","CP895","CP852","Windows-1250","Windows-1252"})encoding_choice->Append(enc);
+        encoding_choice->SetSelection(0);rs->Add(encoding_choice,0,wxEXPAND|wxLEFT|wxRIGHT,6);
+        encoding_choice->Bind(wxEVT_CHOICE,[this](wxCommandEvent&){show_preview();});
         auto* actions=new wxFlexGridSizer(2,2,2,2);rs->Add(actions,0,wxALL,2);
         export_button=button(right,actions,export_one,"Extract raw");export_button->Enable(false);
         decoded_button=button(right,actions,decoded_one,"Extract decoded");decoded_button->Enable(false);
@@ -481,8 +635,12 @@ public:
         auto* browserBottom=new wxBoxSizer(wxHORIZONTAL);s->Add(browserBottom,0,wxEXPAND);
         button(browser,browserBottom,save_manifest,"Save inventory manifest");
         auto* conversion=page("Extraction / Conversion",s);
+        label(conversion,s,"Convert game data to ZIP bundles",true);
+        label(conversion,s,"Choose all game data or one logical archive.\nSupported assets are converted automatically; original bytes are always retained.");
+        block_choice=new wxChoice(conversion,wxID_ANY);block_choice->Append("All game data");block_choice->SetSelection(0);s->Add(block_choice,0,wxEXPAND|wxALL,10);
+        batch_button=button(conversion,s,batch_id,"Convert and package");batch_button->Enable(false);
         label(conversion,s,"Lossless raw extraction",true);
-        label(conversion,s,"Export all parsed FS / FSU members to a fresh folder.\nStored bytes are preserved; Use Asset Browser for decoded exports and sprite PNG bundles.");
+        label(conversion,s,"Export all parsed FS / FSU members to a fresh folder.\nStored bytes are preserved; For individual exports use Asset Browser.");
         all_button=button(conversion,s,export_all,"Extract all FS / FSU members");all_button->Enable(false);
         auto* valid=page("Validation",s);label(valid,s,"Structural checks",true);
         validation=label(valid,s,"No inventory.");
@@ -496,7 +654,7 @@ public:
         Bind(wxEVT_MENU,[this](wxCommandEvent&){analyze();},scan_id);
         Bind(wxEVT_MENU,[this](wxCommandEvent&){export_manifest();},save_manifest);
         Bind(wxEVT_MENU,[this](wxCommandEvent&){Close();},wxID_EXIT);
-        Bind(wxEVT_MENU,[this](wxCommandEvent&){wxMessageBox("Spellcross Asset Converter 0.3.0\nPart of Spellcross Reloaded\nMIT license\nFS format based on Stanislav Maslan's restoration tools.","About",wxOK|wxICON_INFORMATION,this);},wxID_ABOUT);
+        Bind(wxEVT_MENU,[this](wxCommandEvent&){wxMessageBox("Spellcross Asset Converter 0.4.0\nPart of Spellcross Reloaded\nMIT license\nFS format based on Stanislav Maslan's restoration tools.","About",wxOK|wxICON_INFORMATION,this);},wxID_ABOUT);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){choose(true);},open_dir);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){choose(false);},open_file);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){analyze();},scan_id);
@@ -526,6 +684,7 @@ public:
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){export_png(true);},png_group);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){export_decoded();},decoded_one);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){validate_decoding();},validate_id);
+        Bind(wxEVT_BUTTON,[this](wxCommandEvent&){convert_blocks();},batch_id);
         tabs->Bind(wxEVT_NOTEBOOK_PAGE_CHANGED,[this](wxBookCtrlEvent& e){if(e.GetSelection()!=1)stop_play();e.Skip();});
         Centre();
     }

@@ -86,6 +86,22 @@ int main(){
         require(meta.find("\"x_offset\": -2")!=std::string::npos);
         require(meta.find("\"shadow_index\": 253")!=std::string::npos);
         require(meta.find("\"stored_bytes\": \"original.bin\"")!=std::string::npos);
-        std::cout<<"Inventory, graphics and export metadata tests passed\n";
+        sc::Asset icon;icon.format="ICO";icon.name="COMMON.FS::ICON.ICO";
+        B icon_data{0,0,2,0,3,0,1, 2,2,0,33,255};
+        auto ico=sc::decode_image(icon,icon_data);
+        require(ico&&ico->width==3&&ico->indices[0]==0&&ico->opaque[0]==255&&ico->opaque[2]==0&&!ico->shadow_index);
+        sc::Asset raw_icon;raw_icon.format="LZ";raw_icon.name="COMMON.FS::I_TEST.LZ";
+        auto raw_img=sc::decode_image(raw_icon,B(120,12));require(raw_img&&raw_img->width==60&&raw_img->height==2);
+        sc::Asset txt;txt.name="COMMON.FS::LEVEL1.DEF";txt.format="DEF";txt.member=true;
+        require(sc::is_text_asset(txt,B{'A','\n','B'})&&!sc::is_text_asset(txt,B{'A',0,'B'}));
+        require(sc::block_name(txt)=="COMMON.FS"&&sc::block_name(*spr)=="UNITS.FSU");
+        txt.name="DATA/TEXTS.FS::E02_0001";txt.format="UNKNOWN";
+        require(sc::is_text_asset(txt,B{'H','Q'}));
+        txt.name="RESEARCH.FS::R001.INF";txt.format="INF";
+        require(sc::is_text_asset(txt,B{'R','1'}));
+        sc::Asset portrait;portrait.name="INFO.FS::AMX13_1.LZ";portrait.format="LZ";portrait.member=true;
+        auto art=sc::decode_image(portrait,B(437*390,0));
+        require(art&&art->width==437&&art->height==390&&art->opaque[0]==255);
+        std::cout<<"Inventory, graphics and archive conversion tests passed\n";
     }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}
 }

@@ -26,3 +26,5 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 LZ dictionary and FSU resource/scanline layout references: `LZ_spell.cpp`, `LZ_spell.h`, `fsu_archive.cpp`, `fsu_archive.h`, Spellcross Map Editor, copyright (c) 2021–2025 Stanislav Maslan, MIT license (same terms above).
+
+ICO/BTN/CUR and named raw image layout references: `spell_graphics.cpp` and `spellcross.cpp`, and CP895 mapping reference `other.cpp`, in the MIT-licensed Spellcross Map Editor / Reloaded sources (same license terms above).
