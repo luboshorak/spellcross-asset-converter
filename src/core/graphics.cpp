@@ -150,6 +150,13 @@ static bool in_archive(const Asset& a,std::string_view archive){
 }
 bool is_text_asset(const Asset& a,std::span<const std::uint8_t> d){
     if(d.empty())return false;
+    // Retail COMMON.FS stores DOS filenames and identifiers in LZ streams.
+    // Require printable ASCII in these specifically identified records.
+    const auto name=upper_name(a);
+    if(a.format=="LZ"&&in_archive(a,"COMMON.FS")&&
+       (name=="C02.LZ"||name=="C03.LZ"||name=="C04.LZ"||name=="C05.LZ"||name=="ELMONDO.LZ")){
+        return d.size()<=260&&std::all_of(d.begin(),d.end(),[](auto b){return b>=32&&b<=126;});
+    }
     bool named=a.format=="DEF"||a.format=="TXT"||a.format=="BRF"||a.format=="TUT"||
         a.format=="ENG"||a.format=="CZE"||a.format=="POL"||a.format=="ITA"||
         a.format=="CZ"||a.format=="EN"||a.format=="PL"||a.format=="IT"||
@@ -164,7 +171,13 @@ bool is_text_asset(const Asset& a,std::span<const std::uint8_t> d){
 // Native geometry from SR strategic renderer and UI coordinate catalogue.
 struct RawUi {int w,h;bool transparent;std::string palette;};
 static std::optional<RawUi> raw_ui(const Asset& a){
-    auto n=upper_name(a);if(a.member&&!block_name(a).empty()&&!in_archive(a,"COMMON.FS"))return std::nullopt;
+    auto n=upper_name(a);
+    if(in_archive(a,"INFO.FS")&&a.format=="DTA"&&n=="PATTERN.DTA")return RawUi{32,32,false,"info"};
+    if(a.member&&!block_name(a).empty()&&!in_archive(a,"COMMON.FS"))return std::nullopt;
+    // Dimensions verified by reconstructing the English retail pixel arrays.
+    if(n=="DIFFIC.LZ")return RawUi{249,152,true,"MAINMENU.PAL"};
+    if(n=="GOTOLSTA.LZ")return RawUi{176,91,true,"tactical"};
+    if(n=="LED_OFF.LZ"||n=="LED_ON.LZ")return RawUi{9,8,true,"tactical"};
     if(n=="MAINMENU.LZ"||n=="MAINMENU.BIN")return RawUi{640,480,false,"MAINMENU.PAL"};
     if(n=="MAINM_BG.LZ")return RawUi{255,272,false,"MAINMENU.PAL"};
     if((n.starts_with("MAINM_")||n.starts_with("MAINMD"))&&n.ends_with(".LZ")&&n.size()==10)return RawUi{255,62,true,"MAINMENU.PAL"};
@@ -214,8 +227,39 @@ static std::optional<RawUi> raw_ui(const Asset& a){
     if(auto it=dims.find(n);it!=dims.end())return RawUi{it->second.first,it->second.second,false,"strategy"};
     return std::nullopt;
 }
+// The loose SPELCROS.ICO is a Windows ICONDIR/DIB, unlike the game ICO
+// scanline format. The retail file has one bottom-up 8-bit indexed image.
+struct WindowsIcon {unsigned w,h,colors;std::size_t palette,pixels,mask,stride,mask_stride,end;};
+static bool windows_icon_asset(const Asset& a){
+    return a.format=="ICO"&&upper_name(a)=="SPELCROS.ICO"&&block_name(a).empty();
+}
+static WindowsIcon windows_icon(std::span<const std::uint8_t> d){
+    auto u16=[&](std::size_t p){return unsigned(d[p])|(unsigned(d[p+1])<<8);};
+    auto u32=[&](std::size_t p){return std::uint32_t(d[p])|(std::uint32_t(d[p+1])<<8)|(std::uint32_t(d[p+2])<<16)|(std::uint32_t(d[p+3])<<24);};
+    if(d.size()<22||u16(0)!=0||u16(2)!=1||u16(4)!=1)throw std::runtime_error("Unsupported Windows ICO directory");
+    const unsigned w=d[6]?d[6]:256,h=d[7]?d[7]:256;
+    const std::size_t off=u32(18),len=u32(14);
+    if(off<22||off>d.size()||len>d.size()-off||len<40||
+       u32(off)!=40||u32(off+4)!=w||u32(off+8)!=2*h||
+       u16(off+12)!=1||u16(off+14)!=8||u32(off+16)!=0)
+        throw std::runtime_error("Unsupported Windows ICO bitmap");
+    const unsigned colors=u32(off+32)?u32(off+32):256;
+    if(colors>256)throw std::runtime_error("Invalid Windows ICO palette");
+    const std::size_t stride=(w+3u)&~3u,mask_stride=((w+31u)/32u)*4u;
+    const auto palette=off+40,pixels=palette+4u*colors,mask=pixels+stride*h,end=mask+mask_stride*h;
+    if(end>off+len)throw std::runtime_error("Truncated Windows ICO image");
+    return {w,h,colors,palette,pixels,mask,stride,mask_stride,end};
+}
 Palette asset_palette(const Inventory& inv,const Asset& a,const Palette& tactical){
     auto n=upper_name(a);
+    if(windows_icon_asset(a)){
+        auto d=decode_asset(a);auto ico=windows_icon(d);Palette p{};
+        for(unsigned i=0;i<ico.colors;++i){
+            auto pos=ico.palette+4u*i;
+            p.rgb[3*i]=d[pos+2];p.rgb[3*i+1]=d[pos+1];p.rgb[3*i+2]=d[pos];p.known[i]=true;
+        }
+        return p;
+    }
     if(in_archive(a,"T11.FS")||in_archive(a,"PUST.FS")||in_archive(a,"DEVAST.FS")){
         Palette p=tactical;
         for(auto& entry:inv.assets){
@@ -229,10 +273,10 @@ Palette asset_palette(const Inventory& inv,const Asset& a,const Palette& tactica
         }
         return p;
     }
-    if(in_archive(a,"INFO.FS")&&a.format=="LZ"){
+    if(in_archive(a,"INFO.FS")&&(a.format=="LZ"||(a.format=="DTA"&&n=="PATTERN.DTA"))){
         Palette p{};
         for(unsigned i=0;i<256;++i)for(int c=0;c<3;++c)p.rgb[i*3+c]=static_cast<std::uint8_t>(i);
-        bool chrome=n=="IBG_768.LZ"||n=="INFOPAN.LZ"||n=="INFOLSTA.LZ";
+        bool chrome=n=="IBG_768.LZ"||n=="IBG_600.LZ"||n=="INFOPAN.LZ"||n=="INFOLSTA.LZ"||n=="NAMELSTA.LZ"||n=="PATTERN.DTA";
         auto wanted=chrome?std::string("PALETA.NRM"):n.substr(0,n.size()-3)+".PAL";
         for(auto& entry:inv.assets){
             if(block_name(entry)!=block_name(a)||upper_name(entry)!=wanted)continue;
@@ -357,6 +401,20 @@ std::optional<Sprite> decode_image(const Asset& a,std::span<const std::uint8_t> 
         }
         std::fill(s.opaque.begin(),s.opaque.end(),255);return s;
     }
+    if(windows_icon_asset(a)){
+        auto ico=windows_icon(d);s.width=ico.w;s.height=ico.h;allocate();
+        for(unsigned y=0;y<ico.h;++y){
+            auto row=ico.h-1-y;
+            for(unsigned x=0;x<ico.w;++x){
+                auto at=std::size_t(y)*ico.w+x;
+                auto index=d[ico.pixels+row*ico.stride+x];
+                if(index>=ico.colors)throw std::runtime_error("Windows ICO palette index outside table");
+                s.indices[at]=index;
+                s.opaque[at]=(d[ico.mask+row*ico.mask_stride+x/8]&(0x80u>>(x%8)))?0:255;
+            }
+        }
+        s.trailing_bytes=d.size()-ico.end;return s;
+    }
     if(a.format=="ICO"||a.format=="BTN"||a.format=="PNM-FRAME"){
         if(d.size()<7)throw std::runtime_error("Truncated ICO header");
         s.y=int(u16(0));if(s.y>=32768)s.y-=65536;
@@ -387,6 +445,8 @@ std::optional<Sprite> decode_image(const Asset& a,std::span<const std::uint8_t> 
         if(d.size()<expected||d.size()>expected+64)throw std::runtime_error("Unexpected known UI image size");
     }else if(in_archive(a,"INFO.FS")&&a.format=="LZ"){
         if(n=="IBG_768.LZ"){s.width=1024;s.height=768;opaque_zero=true;}
+        else if(n=="IBG_600.LZ"){s.width=800;s.height=600;opaque_zero=true;}
+        else if(n=="NAMELSTA.LZ"){s.width=200;s.height=80;}
         else if(n=="INFOPAN.LZ"){s.width=640;s.height=480;}
         else if(n=="INFOLSTA.LZ"){s.width=433;s.height=63;}
         else{s.width=437;s.height=390;opaque_zero=true;}
