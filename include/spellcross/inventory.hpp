@@ -15,7 +15,7 @@ struct Asset {
 struct Inventory {
     std::vector<Asset> assets;
     std::vector<std::string> warnings;
-    std::size_t fs_archives{};
+    std::size_t fs_archives{}, fsu_archives{}, fsu_resources{}, fsu_sprites{};
     std::string source_kind;
 };
 std::string utf8(const std::filesystem::path&);
