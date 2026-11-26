@@ -181,6 +181,13 @@ int main(){
         auto modern_map=sc::tactical_map(map_asset,map_data);
         require(modern_map&&modern_map->ground==B({0,0x20})&&modern_map->objects==B({0,0x81})&&modern_map->metadata.find("\"trailing_hex\":\"abcd\"")!=std::string::npos);
         map_data[34]=1;bool rejected=false;try{sc::tactical_map(map_asset,map_data);}catch(const std::exception&){rejected=true;}require(rejected);
+        script.name="A_SOUNDS.DEF";source="; preamble\n; [02] attack\nFIRE\n#\nHIT\nMISS\n";
+        auto classes=sc::class_definition(script,B(source.begin(),source.end()));
+        require(classes&&classes->find("\"id\":2")!=std::string::npos&&classes->find("\"values\":[\"FIRE\",\"#\",\"HIT\",\"MISS\"]")!=std::string::npos);
+        script.name="MURY.DEF";source="; typ 0: wall\n4\n100\n5\n";
+        classes=sc::class_definition(script,B(source.begin(),source.end()));require(classes&&classes->find("\"max_health\":100")!=std::string::npos);
+        script.name="SAMPLES.DEF";source="; [000] first\n#\n; next\nSOUND\n; random\nA\nB\n";
+        classes=sc::class_definition(script,B(source.begin(),source.end()));require(classes&&classes->find("\"id\":2")!=std::string::npos&&classes->find("\"values\":[\"A\",\"B\"]")!=std::string::npos);
         std::cout<<"Inventory, graphics, video, atlas, semantic and campaign tests passed\n";
     }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}
 }

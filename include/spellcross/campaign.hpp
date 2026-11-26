@@ -4,6 +4,7 @@ namespace sc {
 // Ordered syntax representation, not a second implementation of game rules.
 // Original arguments remain strings (leading zeroes, %, names, '-' etc.).
 std::optional<std::string> script_definition(const Asset&,std::span<const std::uint8_t>);
+std::optional<std::string> class_definition(const Asset&,std::span<const std::uint8_t>);
 struct MapPayload {
     std::string metadata;
     Bytes ground,objects;

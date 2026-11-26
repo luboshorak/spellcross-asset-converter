@@ -3,6 +3,8 @@
 #include "spellcross/campaign.hpp"
 #include "spellcross/pack.hpp"
 #include <algorithm>
+#include <charconv>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string_view>
@@ -116,6 +118,82 @@ std::optional<std::string> script_definition(const Asset& a,Span d){
     if(depth)throw std::runtime_error("Unclosed script block");
     o<<"\n],\"block_count\":"<<blocks<<",\"command_count\":"<<commands<<",\"unknown_count\":"<<unknown<<"}\n";
     return o.str();
+}
+std::optional<std::string> class_definition(const Asset& a,Span d){
+    if(a.format!="DEF"||d.empty()||d.size()>16u*1024u*1024u)return std::nullopt;
+    auto name=lower(a.name.substr(a.name.find_last_of("/\\:")+1));
+    const bool object=name=="mury.def"||name=="mosty.def"||name=="specobj.def";
+    const bool auxiliary=name=="samples.def";
+    const bool list=name=="c_names.def"||name=="cheats.def";
+    int slots=name=="a_sounds.def"?4:name=="h_sounds.def"||name=="m_sounds.def"?3:
+        name=="o_sounds.def"||name=="z_sounds.def"?2:name=="s_sounds.def"?1:0;
+    if(!object&&!auxiliary&&!list&&!slots)return std::nullopt;
+    for(auto b:d)if(b<32&&b!=9&&b!=10&&b!=13&&b!=26)
+        throw std::runtime_error("Binary data in known class table");
+    auto integer=[](std::string_view s)->std::optional<int>{
+        int n{};auto result=std::from_chars(s.data(),s.data()+s.size(),n);
+        if(result.ec!=std::errc{}||result.ptr!=s.data()+s.size())return std::nullopt;
+        return n;
+    };
+    struct Record {std::optional<int> source_id;std::string label;std::vector<std::string> rows;};
+    std::vector<Record> records;Record pending;bool header=false;
+    auto flush=[&](){
+        if(!pending.rows.empty()){records.push_back(std::move(pending));pending={};}
+    };
+    std::istringstream input(std::string(d.begin(),d.end()));std::string raw;
+    while(std::getline(input,raw)){
+        auto line=trim(raw);if(line.empty())continue;
+        if(line.back()==char(26)){line.pop_back();line=trim(line);if(line.empty())break;}
+        if(line.front()==';'){
+            auto label=trim(std::string_view(line).substr(1));std::optional<int> id;
+            if(!label.empty()&&label.front()=='['){
+                auto end=label.find(']');
+                if(end!=std::string::npos)id=integer(trim(std::string_view(label).substr(1,end-1)));
+            }else if(object){
+                auto l=lower(label);std::size_t start=0;
+                if(l.starts_with("typ "))start=4;
+                else if(l.starts_with("soax_"))start=5;
+                if(start){
+                    while(start<l.size()&&l[start]==' ')++start;
+                    auto end=start;while(end<l.size()&&l[end]>='0'&&l[end]<='9')++end;
+                    if(end>start)id=integer(std::string_view(l).substr(start,end-start));
+                }
+            }
+            if(id||auxiliary){
+                flush();pending.source_id=id;pending.label=label;header=true;
+            }
+            continue;
+        }
+        if(list){records.push_back({std::nullopt,{}, {line}});continue;}
+        if(!header)throw std::runtime_error("Class value before record header");
+        pending.rows.push_back(line);
+    }
+    flush();
+    if(records.empty())throw std::runtime_error("Empty class table");
+    std::set<int> seen;std::ostringstream o;
+    o<<"{\"schema\":\"spellcross-class-table\",\"version\":1,\"table\":"<<json(name)
+        <<",\"source_encoding\":\"byte-preserving JSON escapes\",\"records\":[\n";
+    for(std::size_t i=0;i<records.size();++i){
+        auto& r=records[i];
+        if((object||slots)&&(!r.source_id||*r.source_id<0||!seen.insert(*r.source_id).second))
+            throw std::runtime_error("Missing or duplicate class ID");
+        if((object&&r.rows.size()!=3)||(slots&&r.rows.size()!=std::size_t(slots)))
+            throw std::runtime_error("Unexpected class row count");
+        if(i)o<<",\n";
+        o<<"{\"id\":"<<((object||slots)?std::size_t(*r.source_id):i)<<",\"label\":"<<json(r.label);
+        if(r.source_id)o<<",\"source_id\":"<<*r.source_id;
+        o<<",\"values\":[";
+        for(std::size_t j=0;j<r.rows.size();++j){if(j)o<<',';o<<json(r.rows[j]);}o<<']';
+        if(object){
+            const char* keys[]={"defence","max_health","sound_class"};
+            for(unsigned j=0;j<3;++j){
+                auto v=integer(r.rows[j]);if(!v)throw std::runtime_error("Invalid object class numeric value");
+                o<<",\""<<keys[j]<<"\":"<<*v;
+            }
+        }
+        o<<'}';
+    }
+    o<<"\n]}\n";return o.str();
 }
 std::optional<MapPayload> tactical_map(const Asset& a,Span d){
     // DTA also denotes terrain tile resources. Version byte + known terrain
