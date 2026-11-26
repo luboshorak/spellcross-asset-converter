@@ -128,11 +128,11 @@ PackageSummary validate_package(const Entries& entries,std::string_view expected
         if(auto role=r.get("role")){
             if(role->str()!="legacy-only"||status!="raw"||!row.payload.empty())
                 fail("Invalid legacy-only record: "+id);
-            sc::Asset source_asset;source_asset.name=row.name;source_asset.format=fmt;
+            sc::Asset source_asset;source_asset.name=row.name;source_asset.format=fmt;source_asset.size=n;
             source_asset.member=row.name.find("::")!=std::string::npos;
             if(!sc::legacy_support_asset(source_asset))fail("Unrecognized legacy-only resource: "+id);
             row.kind="legacy-support";row.assessment="legacy-only";
-            row.notes="Preserved original DOS support file; excluded from modern game conversion";
+            row.notes="Preserved original archival/support resource; excluded from required modern game conversion";
         }
         audit_index.emplace(id,out.audit_records.size());
         out.audit_records.push_back(std::move(row));
