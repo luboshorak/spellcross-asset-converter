@@ -1,4 +1,5 @@
 #include "spellcross/validation.hpp"
+#include "spellcross/semantic.hpp"
 #include <algorithm>
 #include <charconv>
 #include <set>
@@ -124,6 +125,15 @@ PackageSummary validate_package(const Entries& entries,std::string_view expected
         else if(status=="raw"||status=="failed"){row.kind="original-only";row.assessment="legacy-required";}
         else if(status=="decoded"){row.kind="decoded-binary";row.assessment="legacy-required";}
         else{row.kind="unclassified";row.assessment="semantic-review";}
+        if(auto role=r.get("role")){
+            if(role->str()!="legacy-only"||status!="raw"||!row.payload.empty())
+                fail("Invalid legacy-only record: "+id);
+            sc::Asset source_asset;source_asset.name=row.name;source_asset.format=fmt;
+            source_asset.member=row.name.find("::")!=std::string::npos;
+            if(!sc::legacy_support_asset(source_asset))fail("Unrecognized legacy-only resource: "+id);
+            row.kind="legacy-support";row.assessment="legacy-only";
+            row.notes="Preserved original DOS support file; excluded from modern game conversion";
+        }
         audit_index.emplace(id,out.audit_records.size());
         out.audit_records.push_back(std::move(row));
     }
@@ -200,7 +210,7 @@ PackageSummary validate_package(const Entries& entries,std::string_view expected
             if(!owners[id].contains(p))fail("Missing atlas frames: "+id);
             if(placeholders.contains(id)){
                 if(frame_counts[id]!=1)fail("Placeholder has extra frames: "+id);
-                row.kind="synthetic-placeholder";row.assessment="legacy-required";
+                row.kind="synthetic-placeholder";row.assessment="placeholder";
                 row.notes="Known damaged source; explicit transparent sentinel, original bytes retained, not an authentic decoded graphic";
                 continue;
             }
@@ -234,6 +244,54 @@ PackageSummary validate_package(const Entries& entries,std::string_view expected
             if(!m.at("rgb_roundtrip_verified").boolean()||!entry(entries,loc).size)fail("Unverified or empty movie");
             derived.insert(loc);row.kind="lossless-movie";row.assessment="modern-payload";
             row.notes="Exporter reports RGB round-trip; independent timing/audio verification still required";
+        }else if(p.ends_with("/retail-table.json")){
+            auto t=parse(e.json);schema(t,"spellcross-retail-table");
+            const auto kind=t.at("kind").str();
+            // Reconstruct source values, and validate both the exact source
+            // length and all redundant fields against the same table parser.
+            sc::Bytes bytes;
+            auto append=[&](const J& values,std::size_t n,unsigned max){
+                if(values.arr().size()!=n)fail("Retail table length mismatch: "+id);
+                for(const auto& item:values.arr()){
+                    auto v=item.num();if(v>max)fail("Retail table value out of range: "+id);
+                    bytes.push_back(static_cast<std::uint8_t>(v));
+                }
+            };
+            if(kind=="territory-adjacency"){
+                auto& masks=t.at("masks").arr();auto& neighbors=t.at("neighbors").arr();
+                if(masks.size()!=32||neighbors.size()!=32)fail("Invalid SSD row count");
+                for(unsigned i=0;i<32;++i){
+                    auto mask=masks[i].num();if(mask>0xffffffffu)fail("Invalid SSD mask");
+                    for(unsigned k=0;k<4;++k)bytes.push_back(static_cast<std::uint8_t>(mask>>(8*k)));
+                    std::uint64_t rebuilt=0;
+                    for(const auto& item:neighbors[i].arr()){
+                        auto bit=item.num();
+                        if(bit>=32||(rebuilt&(std::uint64_t(1)<<bit)))fail("Invalid SSD neighbor");
+                        rebuilt|=std::uint64_t(1)<<bit;
+                    }
+                    if(rebuilt!=mask)fail("SSD mask/neighbor mismatch");
+                }
+            }else if(kind=="gamma-table"){
+                auto& rows=t.at("rows").arr();if(rows.size()!=11)fail("Invalid gamma row count");
+                for(auto& row:rows)append(row,64,63);
+            }else if(kind=="terrain-color-indices"){
+                append(t.at("values"),11,255);
+                if(t.at("slot_semantics").str()!="unverified")fail("Unexpected terrain color semantics");
+            }else if(kind=="info-rgb-palette"||kind=="info-index-filter"){
+                append(t.at("values"),kind=="info-rgb-palette"?768:256,255);
+                const auto role=t.at("role").str();
+                if((kind=="info-rgb-palette"&&(role!="normal"||!row.name.ends_with("PALETA.NRM")))||
+                   (kind=="info-index-filter"&&!((role=="dark"&&row.name.ends_with("PALETA.DRK"))||(role=="light"&&row.name.ends_with("PALETA.LGH")))))
+                    fail("Invalid INFO palette role");
+            }else if(kind=="empty-palette"){
+                append(t.at("values"),0,255);append(t.at("original_bytes"),2,255);
+            }else fail("Unknown retail table kind: "+kind);
+            sc::Asset asset;asset.name=row.name;asset.format=row.format;asset.member=row.name.find("::")!=std::string::npos;
+            auto checked=sc::retail_table(asset,bytes);
+            if(row.status!="converted"||bytes.size()!=row.source_bytes||!checked||checked->kind!=kind)
+                fail("Retail table/source metadata mismatch: "+id);
+            row.kind=kind;row.assessment=kind=="terrain-color-indices"?"semantic-review":"modern-payload";
+            row.notes=kind=="terrain-color-indices"?"All source indices preserved; slot meaning not verified":"Known table structure; source-byte parity not independently checked";
         }else if(p.ends_with(".json")){
             auto meta=parse(e.json);
             if(p.ends_with("/units.json")){row.kind="unit-definitions";row.notes="Unmapped fields and cross-references need review";}
@@ -355,8 +413,9 @@ AuditReport audit_report(std::string_view root,const std::map<std::string,Packag
     report<<"\nTOTAL: "<<records<<" records, "<<zip_entries<<" ZIP entries, "<<frames<<" atlas frames\n";
     for(const auto& status:statuses)report<<status<<": "<<count(totals,status)<<"\n";
     report<<"\nASSESSMENT (not runtime certification)\n";
-    for(const auto& key:{"modern-payload","semantic-review","legacy-required","preserved-container"})
+    for(const auto& key:{"modern-payload","semantic-review","legacy-only","placeholder","legacy-required","preserved-container"})
         report<<key<<": "<<count(assessments,key)<<"\n";
+    report<<"\nUnresolved (legacy-required): "<<count(assessments,"legacy-required")<<"\n";
     report<<"\nPAYLOAD KINDS\n";
     for(const auto& [kind,n]:kinds)report<<kind<<": "<<n<<"\n";
     report<<"\nPHYSICAL PACKAGE STORAGE (bytes; each ZIP entry counted once per package)\n"
