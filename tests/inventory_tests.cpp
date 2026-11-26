@@ -358,6 +358,26 @@ int main(){
         auto graphics_summary=validate_package(entries,"units");require(graphics_summary.frames==1&&graphics_summary.pixels==9&&graphics_summary.png_bytes==24);
         require(graphics_summary.audit_records.at(0).assessment=="semantic-review"&&
                 graphics_summary.audit_records.at(0).notes=="Missing FSU layout");
+        // Failed retail terrain remains failed, but has a renderable sentinel.
+        sc::Asset damaged;damaged.name="DATA/DEVAST.FS::DMA0_270.DTA";damaged.format="DTA";damaged.member=true;
+        B damaged_bytes(2248);damaged_bytes[186]=42;
+        auto sentinel=sc::damaged_terrain_placeholder(damaged,damaged_bytes);
+        require(sentinel&&sentinel->width==80&&sentinel->height==1&&sentinel->opaque==B(80));
+        bool original_bad=false;try{sc::decode_image(damaged,damaged_bytes);}catch(const std::exception&){original_bad=true;}require(original_bad);
+        damaged_bytes[0]=1;require(!sc::damaged_terrain_placeholder(damaged,damaged_bytes));
+        damaged_bytes[0]=0;damaged.name="DEVAST.FS::OTHER.DTA";require(!sc::damaged_terrain_placeholder(damaged,damaged_bytes));
+        Entries placeholder_entries;
+        placeholder_entries["original.bin"].size=2248;
+        placeholder_entries["palette.rgb"].size=768;placeholder_entries["palette.known"].size=256;
+        placeholder_entries["i.png"]={12,80,1,{}};placeholder_entries["m.png"]={12,80,1,{}};
+        placeholder_entries["manifest.json"].json=R"({"schema":"spellcross-pak","version":1,"category":"terrain","partial":false,"records":[{"id":"bad#1","name":"DEVAST.FS::DMA0_270.DTA","format":"DTA","status":"failed","original":{"entry":"original.bin","offset":0,"size":2248},"payload":"frames.json"}],"graphics":["frames.json"],"palettes":[{"rgb":"palette.rgb","known":"palette.known"}]})";
+        placeholder_entries["frames.json"].json=R"({"schema":"spellcross-atlas","version":1,"group":"terrain","pages":[{"indices":"i.png","opacity":"m.png"}],"frames":[{"id":"bad#1","frame":0,"page":0,"rect":[0,0,80,1],"origin":[0,0],"palette":0,"synthetic_placeholder":true}]})";
+        auto placeholder_summary=validate_package(placeholder_entries,"terrain");
+        require(placeholder_summary.counts.at("failed")==1&&placeholder_summary.audit_records.at(0).kind=="synthetic-placeholder"&&placeholder_summary.audit_records.at(0).assessment=="legacy-required");
+        auto& placeholder_meta=placeholder_entries["frames.json"].json;
+        auto marker_pos=placeholder_meta.find(",\"synthetic_placeholder\":true");
+        placeholder_meta.erase(marker_pos,std::string(",\"synthetic_placeholder\":true").size());
+        bool unmarked=false;try{validate_package(placeholder_entries,"terrain");}catch(const std::exception&){unmarked=true;}require(unmarked);
         auto& atlas_json=entries["frames.json"].json;
         atlas_json.pop_back();atlas_json+=R"(,"fsu_layout":{"schema":"spellcross-fsu-layout","version":1,"static_azimuths":1,"static_slopes":1,"animation_azimuths":0,"animation_slopes":0,"frames_per_sequence":0,"static_by_slope":[["a#1"]],"animation_by_azimuth_or_slope":[]}})";
         validate_package(entries,"units");
@@ -387,6 +407,14 @@ int main(){
         write(t.p/"SEQUENCE.PNM",sequence_fixture);
         sc::Asset sequence_asset{t.p/"SEQUENCE.PNM","SEQUENCE.PNM","PNM",0,sequence_fixture.size(),false};
         auto steps=sc::layer_children(sequence_asset,{});require(steps.size()==3&&steps[0].offset==13&&steps[1].offset==13+icon_data.size()&&steps[2].offset==13);
+        auto direct_steps=sc::animation_frames(sequence_asset,sequence_fixture);
+        require(direct_steps.size()==steps.size());
+        for(std::size_t k=0;k<steps.size();++k)require(direct_steps[k].offset==steps[k].offset&&direct_steps[k].size==steps[k].size);
+        {
+            sc::PreviewSession session;
+            require(sc::preview(sequence_asset,sequence_fixture.size())==sequence_fixture);
+            require(sc::preview(sequence_asset,4)==B(sequence_fixture.begin(),sequence_fixture.begin()+4));
+        }
         require(sc::layer_bytes(sequence_asset,{steps[2]})==icon_data);
         sc::Inventory palette_fixture;
         auto fixture_bank=[&](const std::string& archive,const std::string& name,unsigned count,unsigned value){
@@ -402,10 +430,16 @@ int main(){
         fixture_bank("INFO.FS","PALETA.NRM",256,70);
         fixture_bank("COMMON.FS","MAINMENU.PAL",256,80);
         sc::Palette tactical{};tactical.rgb.fill(90);tactical.known.fill(true);
+        auto extra=palette_fixture.assets.front();extra.format="FSU-SPRITE";extra.name="UNITS.FSU::FAKE/A00";extra.size=123;
+        palette_fixture.assets.push_back(extra);
+        auto indexed_palette_fixture=sc::palette_inventory(palette_fixture);
+        require(indexed_palette_fixture.assets.size()+1==palette_fixture.assets.size());
         sc::Asset context_asset;context_asset.member=true;context_asset.format="BTN";
         for(auto n:{"BIGMB__N.BTN","BIGM2__N.BTN","BMPAN__N.BTN","VMMIN__N.BTN"}){
             context_asset.name="COMMON.FS::"+std::string(n);
             auto actual=sc::asset_palette(palette_fixture,context_asset,tactical);
+            auto indexed=sc::asset_palette(indexed_palette_fixture,context_asset,tactical);
+            require(actual.rgb==indexed.rgb&&actual.known==indexed.known);
             require(actual.rgb[0]==20&&actual.rgb[128*3]==10&&actual.rgb[192*3]==30);
         }
         context_asset.name="COMMON.FS::IINFO__N.BTN";require(sc::asset_palette(palette_fixture,context_asset,tactical).rgb[0]==70);
