@@ -10,6 +10,8 @@ struct Entry {
     int png_width{},png_height{};
     // Only JSON metadata is retained; bulk payloads are streamed by caller.
     std::string json;
+    // Bounded tactical tile arrays retained for read-back index checks.
+    std::vector<std::uint8_t> tile_bytes;
 };
 using Entries=std::map<std::string,Entry>;
 // Physical entries are counted once; logical original ranges can overlap.
@@ -26,6 +28,7 @@ struct AtlasGroup {std::string group,entry;std::uint64_t frames{};bool fsu_layou
 // plus a field/line selector; unknown syntax is reported separately.
 struct GameReference {
     std::string source,field,kind,target,scope;
+    std::uint64_t frame_limit{};
 };
 struct DefinitionSet {
     std::string source,kind;
