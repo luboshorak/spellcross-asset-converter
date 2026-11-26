@@ -434,8 +434,8 @@ int main(){
             require(actual->indices.size()==std::size_t(w*h)&&actual->indices[0]==0&&actual->indices.back()==7);
         }
         // Installer resources must not inherit the unrelated tactical bank.
-        sc::Asset installer;installer.member=true;installer.name="DATA/INSTALL.FS::BAR.LZ";installer.format="LZ";
-        auto missing_installer_palette=sc::asset_palette({},installer,tactical);
+        sc::Asset installer_bar;installer_bar.member=true;installer_bar.name="DATA/INSTALL.FS::BAR.LZ";installer_bar.format="LZ";
+        auto missing_installer_palette=sc::asset_palette({},installer_bar,tactical);
         require(!missing_installer_palette.known[7]);
         sc::Asset logo;logo.member=true;logo.name="COMMON.FS::JRC_LOGO.LZ";logo.format="LZ";
         fixture_bank("COMMON.FS","JRC_LOGO.PAL",256,73);
