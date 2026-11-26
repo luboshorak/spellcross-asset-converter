@@ -146,8 +146,39 @@ bool is_text_asset(const Asset& a,std::span<const std::uint8_t> d){
         in_archive(a,"TEXTS.FS")||(in_archive(a,"RESEARCH.FS")&&a.format=="INF")||
         (in_archive(a,"INFO.FS")&&a.format=="LST");
     if(!named)return false;
-    for(auto b:d)if(b<32&&b!=9&&b!=10&&b!=13)return false;
+    const bool narrative=in_archive(a,"TEXTS.FS")||in_archive(a,"RESEARCH.FS")||(in_archive(a,"INFO.FS")&&a.format=="LST");
+    if(!narrative)for(auto b:d)if(b<32&&b!=9&&b!=10&&b!=13&&b!=26)return false;
     return true;
+}
+// Native geometry from SR strategic renderer and UI coordinate catalogue.
+struct RawUi {int w,h;bool transparent;std::string palette;};
+static std::optional<RawUi> raw_ui(const Asset& a){
+    auto n=upper_name(a);if(a.member&&!in_archive(a,"COMMON.FS"))return std::nullopt;
+    if(n=="MAINMENU.LZ"||n=="MAINMENU.BIN")return RawUi{640,480,false,"MAINMENU.PAL"};
+    if(n=="MAINM_BG.LZ")return RawUi{255,272,false,"MAINMENU.PAL"};
+    if((n.starts_with("MAINM_")||n.starts_with("MAINMD"))&&n.ends_with(".LZ")&&n.size()==10)return RawUi{255,62,true,"MAINMENU.PAL"};
+    if(n=="TUTMNU.LZ")return RawUi{250,214,true,"MAINMENU.PAL"};
+    if(n=="CAULDRON.LZ")return RawUi{640,480,false,"CAULDRON.PAL"};
+    if(n=="HELP1024.LZ0")return RawUi{1024,768,false,"HELP1024.PAL"};
+    if(n=="HELP800.LZ0")return RawUi{800,600,false,"HELP800.PAL"};
+    if(n=="HELP640.LZ0")return RawUi{640,480,false,"HELP640.PAL"};
+    if(n=="BIG_MAP.LZ")return RawUi{640,480,false,"strategy"};
+    if((n.starts_with("LEVEL_")||n.starts_with("HMLA__"))&&n.size()==11&&n.ends_with(".LZ"))return RawUi{379,259,n.starts_with("HMLA"),"LEVEL_"+n.substr(6,2)+".PAL"};
+    if(n.starts_with("VM")&&n.ends_with("_FULL.LZ"))return RawUi{575,480,false,"strategy"};
+    static const std::map<std::string,std::pair<int,int>> dims={
+        {"BUY.LZ",{406,464}},{"HIERARCH.LZ",{406,464}},{"UNITS.LZ",{406,464}},
+        {"RSRCH_BG.LZ",{406,464}},{"INFO.LZ",{412,464}},{"STATS.LZ",{569,464}},
+        {"FACTORY.LZ",{569,464}},{"OPTIONS.LZ",{569,464}},
+        {"VMM_LST1.LZ",{163,41}},{"VMM_LST2.LZ",{406,174}},
+        {"VMU_LST1.LZ",{154,41}},{"VMU_LST2.LZ",{241,141}},
+        {"VMB_LST1.LZ",{163,41}},{"VMB_LST2.LZ",{241,141}},
+        {"VMB_DIS.LZ",{146,17}},{"VMB_DIS2.LZ",{132,16}},{"VMR_LST1.LZ",{120,40}},
+        {"VMO_BAR.LZ",{10,12}},{"SB_BG01.LZ",{163,429}},{"SB_BG02.LZ",{163,472}},
+        {"SB_BG03.LZ",{163,287}},{"SB_BG04.LZ",{163,287}},{"SB_BAR01.LZ",{16,373}},
+        {"SB_BAR02.LZ",{16,417}},{"SB_BAR03.LZ",{16,231}}
+    };
+    if(auto it=dims.find(n);it!=dims.end())return RawUi{it->second.first,it->second.second,false,"strategy"};
+    return std::nullopt;
 }
 Palette asset_palette(const Inventory& inv,const Asset& a,const Palette& tactical){
     auto n=upper_name(a);
@@ -178,8 +209,13 @@ Palette asset_palette(const Inventory& inv,const Asset& a,const Palette& tactica
         }
         return p;
     }
-    if(!((n.starts_with("VM")&&(a.format=="ICO"||a.format=="BTN"))||n=="LASTTERT.ICO"))return tactical;
-    Palette p=tactical;
+    auto ui=raw_ui(a);
+    if(a.format=="CLK"){
+        Palette p{};for(unsigned i=0;i<256;++i){p.rgb[i*3]=p.rgb[i*3+1]=p.rgb[i*3+2]=i;p.known[i]=true;}return p;
+    }
+    if(!ui&&!((n.starts_with("VM")&&(a.format=="ICO"||a.format=="BTN"))||n=="LASTTERT.ICO"))return tactical;
+    Palette p{};
+    for(unsigned i=0;i<256;++i)p.rgb[i*3]=p.rgb[i*3+1]=p.rgb[i*3+2]=i;
     auto bank=[&](std::string_view suffix,unsigned first,unsigned count){
         for(auto& entry:inv.assets){
             if(upper_name(entry)!=suffix||entry.size!=count*3)continue;
@@ -188,7 +224,14 @@ Palette asset_palette(const Inventory& inv,const Asset& a,const Palette& tactica
             catch(const std::exception&){}
         }
     };
-    bank("STRATEGY.PAL",0,256);bank("_SHARED1.PAL",0,128);bank("BIG_MAP.PAL",192,64);
+    if(ui&&ui->palette!="strategy"&&!ui->palette.starts_with("LEVEL_"))bank(ui->palette,0,256);
+    else{
+        bank("STRATEGY.PAL",0,256);bank("_SHARED1.PAL",0,128);bank("BIG_MAP.PAL",192,64);
+        if(ui&&ui->palette.starts_with("LEVEL_")){
+            std::fill_n(p.known.begin()+128,64,false);
+            bank(ui->palette,128,64);
+        }
+    }
     return p;
 }
 static bool terrain_archive(const Asset& a){
@@ -224,6 +267,20 @@ std::optional<Sprite> decode_image(const Asset& a,std::span<const std::uint8_t> 
            std::uint64_t(s.width)*s.height>16000000)throw std::runtime_error("Invalid image dimensions");
         s.indices.resize(std::size_t(s.width)*s.height);s.opaque.resize(s.indices.size());
     };
+    if(a.format=="CLK"){
+        if(d.size()<4)throw std::runtime_error("Truncated CLK header");
+        s.height=u16(0);s.width=u16(2);allocate();
+        std::size_t table=4+2u*s.height;if(table>d.size())throw std::runtime_error("Truncated CLK offsets");
+        for(int y=0;y<s.height;++y){
+            auto p=std::size_t(u16(4+2*y)),end=y+1<s.height?std::size_t(u16(6+2*y)):d.size();
+            if(p<table||end<p||end>d.size())throw std::runtime_error("Invalid CLK row offset");
+            unsigned x=0;while(p+1<end&&x<unsigned(s.width)){
+                auto run=d[p++],value=d[p++];unsigned n=std::min<unsigned>(run,s.width-x);
+                std::fill_n(s.indices.begin()+std::size_t(y)*s.width+x,n,value);x+=n;
+            }
+        }
+        std::fill(s.opaque.begin(),s.opaque.end(),255);return s;
+    }
     if(a.format=="ICO"||a.format=="BTN"||a.format=="PNM-FRAME"){
         if(d.size()<7)throw std::runtime_error("Truncated ICO header");
         s.y=int(u16(0));if(s.y>=32768)s.y-=65536;
@@ -246,7 +303,11 @@ std::optional<Sprite> decode_image(const Asset& a,std::span<const std::uint8_t> 
     std::size_t start=0;
     bool opaque_zero=false;
     auto n=upper_name(a);
-    if(in_archive(a,"INFO.FS")&&a.format=="LZ"){
+    if(auto ui=raw_ui(a)){
+        s.width=ui->w;s.height=ui->h;opaque_zero=!ui->transparent;
+        auto expected=std::size_t(s.width)*s.height;
+        if(d.size()<expected||d.size()>expected+64)throw std::runtime_error("Unexpected known UI image size");
+    }else if(in_archive(a,"INFO.FS")&&a.format=="LZ"){
         if(n=="IBG_768.LZ"){s.width=1024;s.height=768;opaque_zero=true;}
         else if(n=="INFOPAN.LZ"){s.width=640;s.height=480;}
         else if(n=="INFOLSTA.LZ"){s.width=433;s.height=63;}
@@ -264,6 +325,7 @@ std::optional<Sprite> decode_image(const Asset& a,std::span<const std::uint8_t> 
         else if(n.starts_with("I_")&&a.format=="LZ")s.width=60;
         else if(n=="I_ATTACK"||n=="I_LOWER"||n=="I_MOVE"||n=="I_UPPER"||n=="I_SELECT"){s.width=20;s.height=20;opaque_zero=true;}
         else if(n=="I_TAB"){s.width=60;s.height=45;opaque_zero=true;}
+        else if(a.format=="DTA"&&in_archive(a,"COMMON.FS")&&n.starts_with("RAM"))s.width=n.ends_with("HORZ.DTA")?76:10;
         else return std::nullopt;
         if(!s.height){if(d.size()%s.width)throw std::runtime_error("Raw image length not divisible by known width");s.height=static_cast<int>(d.size()/s.width);}
     }

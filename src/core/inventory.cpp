@@ -82,7 +82,7 @@ static void inspect_fs(Inventory& out, const Asset& a) {
             U off=le(b.data()+13), len=le(b.data()+17);
             bounds(off,len,a.size);
             if (len && off<table) throw std::runtime_error("FS member overlaps directory");
-            members.push_back({a.backing,a.name+"::"+n,format(n),a.offset+off,len,true});
+            members.push_back({a.backing,a.name+"::"+n,format(n),a.offset+off,len,true,static_cast<std::uint32_t>(i)});
         }
         for (auto& m:members) add(out,std::move(m));
         ++out.fs_archives;
@@ -123,7 +123,7 @@ static void inspect_fsu(Inventory& out,const Asset& a) {
                 U start=le(b.data()+3),len=unsigned(b[7])|(unsigned(b[8])<<8);
                 bounds(start,len,a.size);
                 if(name.empty()||len<3)throw std::runtime_error("Invalid FSU sprite entry");
-                sprites.push_back({a.backing,a.name+"::"+group+"/"+name,"FSU-SPRITE",a.offset+start,len,true});
+                sprites.push_back({a.backing,a.name+"::"+group+"/"+name,"FSU-SPRITE",a.offset+start,len,true,static_cast<std::uint32_t>(j)});
             }
         }
         out.fsu_resources+=static_cast<std::size_t>(count);

@@ -11,6 +11,7 @@ struct Asset {
     std::string format;
     std::uint64_t offset{}, size{};
     bool member{};
+    std::uint32_t source_ordinal{};
 };
 struct Inventory {
     std::vector<Asset> assets;
