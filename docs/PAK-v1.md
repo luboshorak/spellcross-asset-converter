@@ -37,3 +37,7 @@ This is a draft runtime contract: no loader in SR yet. Binary definitions, map
 layers, full animation semantics, fonts, sound/video conversion, and unparsed
 nested containers remain open. No original commercial resources are distributed
 with the converter.
+
+### Semantic extensions (0.7.0)
+
+WAV payloads contain signed little-endian PCM16 with original sample rate and channel count; no resampling. Unit definitions have schema spellcross-units and original_hex per record, including unmapped bytes. Bitmap-font records point to font.json, which references the atlas by path and record ID; frame ordinal is original byte-code position, including generated control and space glyphs. Glyph index 1 means foreground, 0 background. Glyph width is the atlas rectangle width; spacing is separate. Coverage counts in the root manifest are per category/format and status; containers are not counted as converted assets. An asset marked converted need not yet have all runtime semantics mapped.

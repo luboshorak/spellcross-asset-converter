@@ -2,6 +2,7 @@
 #include "spellcross/graphics.hpp"
 #include "spellcross/video.hpp"
 #include "spellcross/pack.hpp"
+#include "spellcross/semantic.hpp"
 #include <set>
 #include <wx/sound.h>
 #include <chrono>
@@ -612,6 +613,7 @@ class Frame final : public wxFrame {
             wxProgressDialog progress("Modern PAK conversion","Converting logical packages...",static_cast<int>(total),this,wxPD_APP_MODAL|wxPD_CAN_ABORT|wxPD_AUTO_HIDE);
             std::size_t done=0,converted=0,decoded=0,raw=0,failed=0,containers=0,pages=0,frames=0;
             std::uint64_t png_total=0,pixel_total=0;
+            std::map<std::string,std::map<std::string,std::size_t>> coverage;
             std::ostringstream root;root<<"{\n\"schema\":\"spellcross-dataset\",\"version\":1,\"partial\":"<<(partial?"true":"false")
                 <<",\"runtime_ready\":false,\"source_kind\":"<<json(inv.source_kind)
                 <<",\"encoding_setting\":"<<json(std::string(encoding_choice->GetStringSelection().utf8_str().data()))
@@ -679,12 +681,29 @@ class Frame final : public wxFrame {
                         }
                         auto base="records/"+std::to_string(i)+"/";
                         std::vector<sc::Sprite> images;
+                        bool font_asset=false;
+                        std::string font_meta;
                         std::vector<std::pair<std::string,sc::Bytes>> derived;
                         auto add_text=[&](std::string name,const std::string& s){derived.emplace_back(std::move(name),sc::Bytes(s.begin(),s.end()));};
                         if(status!="container")try{
                             if(a.size<=64u*1024u*1024u){
                                 auto data=sc::decode_asset(a);
-                                if(a.format=="PNM"||a.format=="ANM"){
+                                if(auto unit_json=sc::unit_definitions(a,data)){
+                                    add_text("units.json",*unit_json);status="converted";detail="Unit fields and exact original record hex";payload=base+"units.json";
+                                }else if(auto sample=sc::decode_sample(a,data)){
+                                    auto wav=sc::pcm_wave(sample->samples,sample->rate,sample->channels);
+                                    auto verified=sc::decode_sample(a,wav);
+                                    if(!verified||verified->samples!=sample->samples||verified->rate!=sample->rate||verified->channels!=sample->channels)
+                                        throw std::runtime_error("PCM WAVE round-trip mismatch");
+                                    derived.emplace_back("audio.wav",std::move(wav));status="converted";detail="PCM16 WAVE; original sample rate and channels";payload=base+"audio.wav";
+                                }else if(auto font=sc::decode_font(a,data)){
+                                    font_asset=true;images=std::move(font->glyphs);
+                                    std::ostringstream fm;
+                                    fm<<"{\"schema\":\"spellcross-bitmap-font\",\"version\":1,\"atlas\":"<<json(prefix+"frames.json")
+                                      <<",\"id\":"<<json(ids[i])<<",\"first_code\":"<<font->first_code<<",\"spacing\":"<<font->spacing
+                                      <<",\"default_height\":"<<font->default_height<<",\"glyph_count\":"<<images.size()<<"}";
+                                    font_meta=fm.str();
+                                }else if(a.format=="PNM"||a.format=="ANM"){
                                     auto children=sc::layer_children(a,{});
                                     std::size_t pixels=0;
                                     for(auto& child:children){
@@ -717,11 +736,14 @@ class Frame final : public wxFrame {
                                     }
                                     status="converted";detail="Indexed pixels and geometry; original semantics retained in source";
                                     payload=prefix+"frames.json";
+                                    if(font_asset){add_text("font.json",font_meta);payload=base+"font.json";detail="Bitmap font glyphs, code positions and spacing";}
                                 }
                             }else detail="Asset exceeds conversion memory limit";
                         }catch(const std::exception& e){images.clear();derived.clear();status="failed";detail=e.what();payload.clear();log("PAK: "+w(a.name)+": "+w(detail));}
                         if(!images.empty()){
-                            const auto palette_id=palettes.intern(sc::asset_palette(inv,a,palette));
+                            auto frame_palette=sc::asset_palette(inv,a,palette);
+                            if(font_asset){frame_palette={};frame_palette.rgb[3]=frame_palette.rgb[4]=frame_palette.rgb[5]=255;frame_palette.known[0]=frame_palette.known[1]=true;}
+                            const auto palette_id=palettes.intern(frame_palette);
                             for(std::size_t frame=0;frame<images.size();++frame){
                                 const auto& im=images[frame];auto rect=atlas.add(im);
                                 if(!rect){flush();rect=atlas.add(im);}
@@ -742,6 +764,7 @@ class Frame final : public wxFrame {
                             fallback=base+"original.bin";zip_original(zip,w(fallback),a);
                             if(original_path.empty()){original_path=fallback;relative=0;}
                         }
+                        ++coverage[category+"/"+a.format][status];
                         if(status=="converted"){++converted;++pack_converted;}
                         else if(status=="decoded"){++decoded;++pack_decoded;}
                         else if(status=="failed"){++failed;++pack_failed;}
@@ -784,7 +807,14 @@ class Frame final : public wxFrame {
                     <<",\"converted\":"<<pack_converted<<",\"decoded\":"<<pack_decoded<<",\"raw\":"<<pack_raw
                     <<",\"failed\":"<<pack_failed<<",\"containers\":"<<pack_containers<<"}";
             }
-            root<<"\n],\"atlas_metrics\":{\"frames\":"<<frames<<",\"pages\":"<<pages<<",\"source_pixels\":"<<pixel_total
+            root<<"\n],\"coverage_by_format\":{";
+            bool first_format=true;
+            for(auto& [format,counts]:coverage){
+                if(!first_format)root<<',';first_format=false;root<<json(format)<<":{";
+                bool first_status=true;for(auto& [status,count]:counts){if(!first_status)root<<',';first_status=false;root<<json(status)<<':'<<count;}
+                root<<'}';
+            }
+            root<<"},\"atlas_metrics\":{\"frames\":"<<frames<<",\"pages\":"<<pages<<",\"source_pixels\":"<<pixel_total
                 <<",\"png_bytes\":"<<png_total<<"}}\n";
             write_manifest_file(dest/"manifest.json",root.str());
             progress.Update(static_cast<int>(total));
@@ -941,7 +971,7 @@ public:
         auto* root=new wxBoxSizer(wxVERTICAL);SetSizer(root);
         auto* header=new wxPanel(this);paint(header,false);auto* hs=new wxBoxSizer(wxVERTICAL);header->SetSizer(hs);
         label(header,hs,"SPELLCROSS  /  ASSET CONVERTER",true);
-        label(header,hs,"RELOADED TOOLKIT   |   v0.6.0   |   Original data inventory");
+        label(header,hs,"RELOADED TOOLKIT   |   v0.7.0   |   Original data inventory");
         root->Add(header,0,wxEXPAND);
         tabs=new wxNotebook(this,wxID_ANY);root->Add(tabs,1,wxALL|wxEXPAND,10);
         wxBoxSizer* s;
@@ -1017,7 +1047,7 @@ public:
         Bind(wxEVT_MENU,[this](wxCommandEvent&){analyze();},scan_id);
         Bind(wxEVT_MENU,[this](wxCommandEvent&){export_manifest();},save_manifest);
         Bind(wxEVT_MENU,[this](wxCommandEvent&){Close();},wxID_EXIT);
-        Bind(wxEVT_MENU,[this](wxCommandEvent&){wxMessageBox("Spellcross Asset Converter 0.6.0\nPart of Spellcross Reloaded\nMIT license\nCopyright (c) 2026 Luboš Horák\nSpellcross Reloaded by Luboš Horák; foundations by Stanislav Mašláň.\nhttps://github.com/luboshorak/spellcross-reloaded\nCAN decoder: CPAL-1.0; libsmacker: LGPL-2.1-or-later.","About",wxOK|wxICON_INFORMATION,this);},wxID_ABOUT);
+        Bind(wxEVT_MENU,[this](wxCommandEvent&){wxMessageBox("Spellcross Asset Converter 0.7.0\nPart of Spellcross Reloaded\nMIT license\nCopyright (c) 2026 Luboš Horák\nSpellcross Reloaded by Luboš Horák; foundations by Stanislav Mašláň.\nhttps://github.com/luboshorak/spellcross-reloaded\nCAN decoder: CPAL-1.0; libsmacker: LGPL-2.1-or-later.","About",wxOK|wxICON_INFORMATION,this);},wxID_ABOUT);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){choose(true);},open_dir);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){choose(false);},open_file);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){analyze();},scan_id);
