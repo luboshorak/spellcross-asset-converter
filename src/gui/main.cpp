@@ -888,28 +888,23 @@ class Frame final : public wxFrame {
         if(zip.GetLastError()!=wxSTREAM_EOF)throw std::runtime_error("Invalid ZIP end");
         return result;
     }
-    static std::string check_dataset(const std::filesystem::path& dir,
+    static sc::validation::AuditReport check_dataset(const std::filesystem::path& dir,
                                      const std::function<bool(const std::string&)>& progress){
         using namespace sc::validation;
         auto raw=read_media(dir/"manifest.json",64u*1024u*1024u);
         std::string root(raw.begin(),raw.end());
         auto packages=dataset_packages(root);
         std::map<std::string,PackageSummary> summaries;
-        std::uint64_t records=0,frames=0,entries=0;
         for(auto& package:packages){
             if(!progress(package.file))throw std::runtime_error("Validation cancelled");
             auto contents=read_pak(dir/package.file);
-            entries+=contents.size();
             try{
                 auto summary=validate_package(contents,package.category);
-                records+=summary.records;frames+=summary.frames;
+                summary.archive_bytes=std::filesystem::file_size(dir/package.file);
                 summaries.emplace(package.file,std::move(summary));
             }catch(const std::exception& e){throw std::runtime_error(package.file+": "+e.what());}
         }
-        validate_dataset(root,summaries);
-        return "PAK structural validation passed: "+std::to_string(packages.size())+" packages, "+
-            std::to_string(entries)+" ZIP entries, "+std::to_string(records)+" records, "+
-            std::to_string(frames)+" atlas frames. CRC and references checked; gameplay parity not tested.";
+        return audit_report(root,summaries);
     }
     void validate_pak(){
         stop_play();wxDirDialog d(this,"Choose modern PAK dataset directory");
@@ -917,8 +912,20 @@ class Frame final : public wxFrame {
         try{
             wxProgressDialog progress("Validate PAK","Reading dataset...",100,this,wxPD_APP_MODAL|wxPD_CAN_ABORT|wxPD_AUTO_HIDE);
             auto result=check_dataset(path(d.GetPath()),[&](const std::string& p){return progress.Pulse(w(p));});
-            progress.Update(100);validation->ChangeValue(w(result));log(w(result));
-            wxMessageBox(w(result),"PAK validation",wxOK|wxICON_INFORMATION,this);
+            progress.Update(100);progress.Hide();
+            validation->ChangeValue(w(result.summary));log(w(result.summary));
+            if(wxMessageBox("Structural validation passed. See the Validation tab for coverage and remaining work.\n\nSave the complete per-record audit?",
+                "PAK export audit",wxYES_NO|wxICON_INFORMATION,this)==wxYES){
+                wxDirDialog output(this,"Choose directory for PAK audit reports");
+                if(output.ShowModal()==wxID_OK){
+                    auto dest=fresh_dir(path(output.GetPath()),"Spellcross-PAK-audit-");
+                    try{
+                        write_manifest_file(dest/"pak-audit.txt",result.summary);
+                        write_manifest_file(dest/"pak-audit.tsv",result.records_tsv);
+                        log("PAK audit saved: "+w(sc::utf8(dest)));
+                    }catch(...){std::error_code ec;std::filesystem::remove_all(dest,ec);throw;}
+                }
+            }
         }catch(const std::exception& e){auto msg="PAK validation: "+w(e.what());validation->ChangeValue(msg);log(msg);wxMessageBox(msg,"PAK validation",wxOK|wxICON_ERROR,this);}
     }
     void convert_modern(){
@@ -1206,11 +1213,13 @@ class Frame final : public wxFrame {
                 <<",\"png_bytes\":"<<png_total<<"}}\n";
             write_manifest_file(dest/"manifest.json",root.str());
             auto verified=check_dataset(dest,[&](const std::string& p){return progress.Pulse("Verifying "+w(p));});
-            log(w(verified));
+            write_manifest_file(dest/"pak-audit.txt",verified.summary);
+            write_manifest_file(dest/"pak-audit.tsv",verified.records_tsv);
+            validation->ChangeValue(w(verified.summary));log(w(verified.summary));
             progress.Update(static_cast<int>(total));
             auto summary=number(packages.size())+" PAK packages\n"+number(converted)+" converted, "+number(decoded)+" decoded, "+number(raw)+" raw, "+number(failed)+" failed, "+number(containers)+" original containers.\n"+
                 number(frames)+" atlas frames / "+number(pages)+" pages; "+number(png_total)+" PNG bytes.\n"+
-                "Draft data format; not yet loadable by SR.\n"+w(sc::utf8(dest));
+                "Draft data format; see pak-audit.txt and pak-audit.tsv for remaining work.\n"+w(sc::utf8(dest));
             log(summary);wxMessageBox(summary,"Modern conversion finished",wxOK|wxICON_INFORMATION,this);
         }catch(const std::exception& e){
             if(!dest.empty()){std::error_code ec;std::filesystem::remove_all(dest,ec);if(ec)log("ERROR: Could not remove incomplete PAK output");}
@@ -1563,7 +1572,7 @@ public:
         auto* valid=page("Validation",s);label(valid,s,"Structural checks",true);
         auto* checks=new wxBoxSizer(wxHORIZONTAL);s->Add(checks,0,wxEXPAND|wxALL,6);
         button(valid,checks,validate_id,"Audit graphics coverage");
-        button(valid,checks,validate_pak_id,"Validate modern PAK dataset");
+        button(valid,checks,validate_pak_id,"Validate / audit PAK dataset");
         checks->AddStretchSpacer();
         validation=new wxTextCtrl(valid,wxID_ANY,"No inventory.",wxDefaultPosition,wxDefaultSize,wxTE_MULTILINE|wxTE_READONLY|wxTE_DONTWRAP);
         paint(validation,false);validation->SetFont(sc::ui::Font(10));s->Add(validation,1,wxEXPAND|wxALL,8);
@@ -1576,7 +1585,7 @@ public:
         Bind(wxEVT_MENU,[this](wxCommandEvent&){analyze();},scan_id);
         Bind(wxEVT_MENU,[this](wxCommandEvent&){export_manifest();},save_manifest);
         Bind(wxEVT_MENU,[this](wxCommandEvent&){Close();},wxID_EXIT);
-        Bind(wxEVT_MENU,[this](wxCommandEvent&){wxMessageBox("Spellcross Asset Converter 0.9.10\nPart of Spellcross Reloaded\nMIT license\nCopyright (c) 2026 Luboš Horák\nSpellcross Reloaded by Luboš Horák; foundations by Stanislav Mašláň.\nhttps://github.com/luboshorak/spellcross-reloaded\nCAN decoder: CPAL-1.0; libsmacker: LGPL-2.1-or-later.","About",wxOK|wxICON_INFORMATION,this);},wxID_ABOUT);
+        Bind(wxEVT_MENU,[this](wxCommandEvent&){wxMessageBox("Spellcross Asset Converter 0.9.11\nPart of Spellcross Reloaded\nMIT license\nCopyright (c) 2026 Luboš Horák\nSpellcross Reloaded by Luboš Horák; foundations by Stanislav Mašláň.\nhttps://github.com/luboshorak/spellcross-reloaded\nCAN decoder: CPAL-1.0; libsmacker: LGPL-2.1-or-later.","About",wxOK|wxICON_INFORMATION,this);},wxID_ABOUT);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){choose(true);},open_dir);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){choose(false);},open_file);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){analyze();},scan_id);
