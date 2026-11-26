@@ -139,6 +139,26 @@ PackageSummary validate_package(const Entries& entries,std::string_view expected
             if(ordinal!=frame_counts[id]++)fail("Non-contiguous atlas frame ordinal: "+id);
             owners[id].insert(name);++out.frames;out.pixels+=w*h;
         }
+        if(auto layout=a.get("fsu_layout")){
+            schema(*layout,"spellcross-fsu-layout");
+            auto az=layout->at("static_azimuths").num(),slopes=layout->at("static_slopes").num();
+            auto anim_az=layout->at("animation_azimuths").num(),anim_slopes=layout->at("animation_slopes").num(),frames=layout->at("frames_per_sequence").num();
+            if(anim_az&&anim_slopes)fail("FSU layout mixes azimuth and slope animation");
+            std::set<std::string> used;
+            auto check_rows=[&](const J& value,std::uint64_t rows,std::uint64_t columns){
+                if(value.arr().size()!=rows)fail("FSU layout row count mismatch");
+                for(auto& row:value.arr()){
+                    if(row.arr().size()!=columns)fail("FSU layout column count mismatch");
+                    for(auto& item:row.arr()){
+                        auto id=item.str();
+                        if(!seen.contains({id,0})||!used.insert(id).second)fail("Invalid or duplicate FSU layout frame");
+                    }
+                }
+            };
+            check_rows(layout->at("static_by_slope"),slopes,az);
+            check_rows(layout->at("animation_by_azimuth_or_slope"),anim_az?anim_az:anim_slopes,frames);
+            if(used.size()!=seen.size())fail("FSU layout does not cover all atlas frames");
+        }
     }
     for(auto& [id,p]:payloads){
         auto& e=entry(entries,p);

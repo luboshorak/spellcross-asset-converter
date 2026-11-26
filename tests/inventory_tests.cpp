@@ -220,6 +220,11 @@ int main(){
         entries["manifest.json"].json=R"({"schema":"spellcross-pak","version":1,"category":"units","partial":false,"records":[{"id":"a#1","name":"a","format":"FSU-SPRITE","status":"converted","original":{"entry":"original.bin","offset":0,"size":4},"payload":"frames.json"}],"graphics":["frames.json"],"palettes":[{"rgb":"palette.rgb","known":"palette.known"}]})";
         entries["frames.json"].json=R"({"schema":"spellcross-atlas","version":1,"group":"a","pages":[{"indices":"i.png","opacity":"m.png"}],"frames":[{"id":"a#1","frame":0,"page":0,"rect":[1,1,3,3],"origin":[-3,4],"palette":0,"shadow_index":253,"trailing_bytes":0}]})";
         auto graphics_summary=validate_package(entries,"units");require(graphics_summary.frames==1&&graphics_summary.pixels==9&&graphics_summary.png_bytes==24);
+        auto& atlas_json=entries["frames.json"].json;
+        atlas_json.pop_back();atlas_json+=R"(,"fsu_layout":{"schema":"spellcross-fsu-layout","version":1,"static_azimuths":1,"static_slopes":1,"animation_azimuths":0,"animation_slopes":0,"frames_per_sequence":0,"static_by_slope":[["a#1"]],"animation_by_azimuth_or_slope":[]}})";
+        validate_package(entries,"units");
+        auto good_layout=atlas_json;auto bad_id=atlas_json.rfind("a#1");atlas_json.replace(bad_id,3,"x#1");
+        bool bad_layout=false;try{validate_package(entries,"units");}catch(const std::exception&){bad_layout=true;}require(bad_layout);atlas_json=good_layout;
         entries["m.png"].png_width=3;bool bad_atlas=false;try{validate_package(entries,"units");}catch(const std::exception&){bad_atlas=true;}require(bad_atlas);
         bool duplicate=false;try{dataset_packages(R"({"schema":"spellcross-dataset","version":1,"version":1})");}catch(const std::exception&){duplicate=true;}require(duplicate);
         auto layout=sc::fsu_layout("ABRMS",{"A00","A01","B00","B01"});require(layout.static_slopes==2&&layout.static_azimuths==2&&layout.stat[1][1]==3);

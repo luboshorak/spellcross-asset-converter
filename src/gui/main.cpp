@@ -1118,7 +1118,8 @@ class Frame final : public wxFrame {
                                 if(converted_fsu_ids.size()!=group_ids.size())throw std::runtime_error("Incomplete FSU sprite conversion");
                                 std::vector<std::string> names;
                                 for(auto i:group_ids){const auto& n=inv.assets[i].name;names.push_back(n.substr(n.find_last_of('/')+1));}
-                                o<<",\"fsu_layout\":"<<animation_json(sc::fsu_layout(group,names),converted_fsu_ids);
+                                auto layout=animation_json(sc::fsu_layout(group,names),converted_fsu_ids);
+                                o<<",\"fsu_layout\":"<<layout;
                             }catch(const std::exception& e){o<<",\"fsu_layout_error\":"<<json(e.what());log("FSU layout: "+w(group)+": "+w(e.what()));}
                         }
                         o<<'}';
