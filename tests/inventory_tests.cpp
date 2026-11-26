@@ -355,6 +355,15 @@ int main(){
             fsa_entries["manifest.json"].json="{\"schema\":\"spellcross-pak\",\"version\":1,\"category\":\"other\",\"partial\":false,\"records\":[{\"id\":\"fsa#1\",\"name\":\"units.fsa\",\"format\":\"FSA\",\"status\":\"converted\",\"original\":{\"entry\":\"original.bin\",\"offset\":0,\"size\":"+std::to_string(fsa.size())+"},\"payload\":\"records/1/fsu-context.json\"}],\"graphics\":[],\"palettes\":[]}";
             auto fsa_summary=validate_package(fsa_entries,"other");
             require(fsa_summary.fsu_contexts.size()==1&&fsa_summary.fsu_contexts[0].static_azimuths==std::vector<std::uint64_t>{1});
+            require(fsa_summary.fsu_contexts[0].origin_count==1&&fsa_summary.fsu_contexts[0].zero_origins==0);
+            require(fsa_summary.fsu_contexts[0].center_count==2&&fsa_summary.fsu_contexts[0].zero_centers==0);
+            auto zero_context=*context_json;
+            const auto origin_pos=zero_context.find("[-2,3]");require(origin_pos!=std::string::npos);
+            zero_context.replace(origin_pos,6,"[0,0]");
+            fsa_entries["records/1/fsu-context.json"].json=zero_context;
+            fsa_entries["records/1/fsu-context.json"].size=zero_context.size();
+            auto zero_summary=validate_package(fsa_entries,"other");
+            require(zero_summary.fsu_contexts[0].zero_origins==1&&zero_summary.metadata_coverage.at("fsu-context-groups-without-nonzero-origins")==1);
             fsa.pop_back();bool truncated_fsa=false;try{sc::fsu_context(fsa_asset,fsa);}catch(const std::exception&){truncated_fsa=true;}require(truncated_fsa);
 
             // Map tile plane indices are actually validated on read-back.
