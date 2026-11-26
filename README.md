@@ -168,3 +168,9 @@ Actual Czech ISO baseline from 0.9.11.1: 32,643 records, 32,555 converted, 72 ra
 ## 0.9.12 — retail tables and archival classification
 
 Convert strategic SSD adjacency, gamma tables, terrain color indices, INFO normal palette/dark/light index filters and verified CRLF-only palette records to validated retail-table JSON. Terrain color slot semantics remain explicitly unverified. Known DOS support assets retain original bytes with a separate legacy-only role; damaged terrain sentinel is counted as placeholder, not successful conversion. Existing status counters remain backward compatible. The audit now distinguishes unresolved resources from handled archival/placeholder items. Successful export optionally generates a bounded `pak-unresolved.zip` (maximum 16 MiB of source bytes, maximum 4 MiB per asset) containing the remaining unresolved original records and catalogue; large omitted records remain listed. No SR or Build.ps1 changes. Full retail export, cross-package ownership and semantic reference validation remain pending.
+
+## 0.9.12.1 — final known retail-file exceptions
+
+- Tactical map detection accepts MAP as well as DTA, using the same validated version byte, terrain header, eight-layer bounds checks and trailing-byte retention. TEMPFILE.MAP in COMMON.FS is a 60x70 T11 working map in the supplied reference archive, not an empty grid.
+- Owner-approved archival exceptions: COMMON.FS::BOXER.LST (LST, 225 bytes, historical editor workspace) and MOVIE.FS::TEMP.DPK (DPK, 525 bytes, truncated temporary video). Keep original bytes and report raw/legacy-only, not converted. Match exact archive/name/format/size; other files still go through normal conversion.
+- DMA0_270.DTA remains an explicit placeholder with its original retained. No PAK schema/status changes. Re-export CZ and EN before claiming zero unresolved assets. Runtime links and full metadata remain pending.
