@@ -98,9 +98,22 @@ bool has_resource_catalog(std::string_view root){
     if(catalog->str()!="resources.json")fail("Unsupported resource catalog path");
     return true;
 }
+bool has_game_metadata(std::string_view root){
+    auto j=parse(root);schema(j,"spellcross-dataset");
+    auto metadata=j.get("game_metadata");
+    if(!metadata)return false;
+    if(metadata->str()!="game-metadata.json")fail("Unsupported game metadata path");
+    return true;
+}
+void validate_game_metadata(std::string_view stored,std::string_view expected){
+    auto actual=parse(stored);schema(actual,"spellcross-game-metadata");
+    auto canonical=parse(expected);schema(canonical,"spellcross-game-metadata");
+    if(!(actual==canonical))fail("Game metadata does not match verified package payloads");
+}
 std::vector<DatasetPackage> dataset_packages(std::string_view text){
     auto j=parse(text);schema(j,"spellcross-dataset");j.at("partial").boolean();j.at("runtime_ready").boolean();
     if(auto catalog=j.get("resource_catalog");catalog&&catalog->str()!="resources.json")fail("Unsupported resource catalog path");
+    if(auto metadata=j.get("game_metadata");metadata&&metadata->str()!="game-metadata.json")fail("Unsupported game metadata path");
     std::vector<DatasetPackage> result;std::set<std::string> files,categories;
     for(auto& p:j.at("packages").arr()){
         auto file=p.at("file").str(),cat=p.at("category").str();
