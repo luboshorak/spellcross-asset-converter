@@ -446,7 +446,7 @@ class Frame final : public wxFrame {
             preview_box->SetValue(hex(data));
             auto full=data;
             if(!sc::compressed(*a)&&a->size>data.size()&&a->size<=64*1024*1024&&
-                (a->format=="ICO"||a->format=="BTN"||a->format=="CUR"||a->format=="GFK"||sc::is_text_asset(*a,data)))
+                (a->format=="ICO"||a->format=="BTN"||a->format=="CUR"||a->format=="GFK"||a->format=="DTA"||sc::is_text_asset(*a,data)))
                 full=sc::decode_asset(*a);
             if(auto decoded=sc::decode_image(*a,full)){
                 auto s=std::move(*decoded);

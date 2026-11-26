@@ -58,3 +58,5 @@ Expand compressed LZ/LZ0 files and FSU sprites using the tree arrow; each decode
 ## 0.5.0 — native media preview
 
 Select a CAN, SMK, DPK or DP2 file and click Play video. The player decodes a bounded clip and plays indexed video using its actual per-frame palettes and available PCM audio (wxSound, platform-dependent). DP2 companion WAVE is searched by original basename, including extensionless assets. Video preview uses the existing Reloaded CAN/Smacker decoders pinned in vendor/reloaded, and DPK/DP2 delta layout from the MIT restoration tools. No FFmpeg dependency for preview. Frame memory is limited; long movies may fail the preview limit. Sound/video timing is preview-only, not an engine-grade playback clock. Modern export format remains provisional. Native video library is built alongside the executable, and its license/source and CPAL notices must accompany distributions.
+
+Terrain DTA in T11/PUST/DEVAST and ANM frames have graphical previews. Terrain uses its own MAP.PAL and CYCLE.PAL banks where present. ANM and movies are not yet converted into a final runtime format.
