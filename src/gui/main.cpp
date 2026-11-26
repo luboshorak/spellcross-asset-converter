@@ -35,7 +35,7 @@
 #include <limits>
 #include <cmath>
 #include <wx/wx.h>
-#include <wx/notebook.h>
+#include "reloaded_theme.hpp"
 #include <wx/listctrl.h>
 #include <wx/filedlg.h>
 #include <wx/dirdlg.h>
@@ -47,7 +47,7 @@
 #include <utility>
 
 namespace {
-const wxColour bg(24,32,25), panel(36,47,35), fg(225,219,192), muted(167,184,153);
+const wxColour bg=sc::ui::Background(), panel(12,31,11), fg=sc::ui::Text(), muted(135,184,112);
 wxString w(const std::string& s) {
     auto text=wxString::FromUTF8(s.data(),s.size());
     return !s.empty() && text.empty()?wxString::From8BitData(s.data(),s.size()):text;
@@ -144,9 +144,10 @@ public:
         canvas=new Canvas(this);s->Add(canvas,1,wxALL|wxEXPAND,6);
         status=new wxStaticText(this,wxID_ANY,"");s->Add(status,0,wxALL,6);
         auto* controls=new wxBoxSizer(wxHORIZONTAL);s->Add(controls,0,wxALIGN_CENTER|wxALL,6);
-        auto* restart=new wxButton(this,wxID_ANY,"Play / restart");controls->Add(restart,0,wxALL,4);
-        auto* pause=new wxButton(this,wxID_ANY,"Stop");controls->Add(pause,0,wxALL,4);
-        auto* close=new wxButton(this,wxID_CANCEL,"Close");controls->Add(close,0,wxALL,4);
+        paint(this);SetFont(sc::ui::Font());status->SetForegroundColour(fg);
+        auto* restart=new sc::ui::Button(this,wxID_ANY,"Play / restart");controls->Add(restart,0,wxALL,4);
+        auto* pause=new sc::ui::Button(this,wxID_ANY,"Stop");controls->Add(pause,0,wxALL,4);
+        auto* close=new sc::ui::Button(this,wxID_CANCEL,"Close");controls->Add(close,0,wxALL,4);
         restart->Bind(wxEVT_BUTTON,[this](wxCommandEvent&){play();});
         pause->Bind(wxEVT_BUTTON,[this](wxCommandEvent&){stop();});
         Bind(wxEVT_TIMER,[this](wxTimerEvent&){
@@ -198,11 +199,12 @@ void save_sprite(const sc::Asset& a,const sc::Palette& p,const std::filesystem::
 class Frame final : public wxFrame {
     sc::Inventory inv;
     wxString source;
-    wxNotebook* tabs{};
-    wxStaticText *source_label{},*stats{},*selected_label{},*validation{};
+    sc::ui::Book* tabs{};
+    wxStaticText *source_label{},*stats{},*selected_label{};
+    wxTextCtrl* validation{};
     wxTextCtrl *filter{},*preview_box{},*log_box{};
     wxTreeCtrl* tree{};
-    wxNotebook* preview_tabs{};
+    sc::ui::Book* preview_tabs{};
     Canvas* graphic{};
     wxTextCtrl *metadata{},*raw_hex{},*text_view{},*structured_view{};
     wxChoice *block_choice{},*encoding_choice{};
@@ -228,20 +230,20 @@ class Frame final : public wxFrame {
     sc::Palette palette;
     wxButton *export_button{},*all_button{},*scan_button{};
     wxPanel* page(const wxString& label,wxBoxSizer*& s) {
-        auto* p=new wxPanel(tabs);
-        paint(p);
+        auto* p=new sc::ui::Panel(tabs);
         s=new wxBoxSizer(wxVERTICAL);p->SetSizer(s);tabs->AddPage(p,label);
         return p;
     }
     wxStaticText* label(wxWindow* p,wxSizer* s,const wxString& text,bool heading=false) {
         auto* t=new wxStaticText(p,wxID_ANY,text);
-        t->SetForegroundColour(heading?fg:muted);
+        t->SetForegroundColour(heading?sc::ui::Heading():fg);
+        t->SetFont(sc::ui::Font());
         if(heading){auto f=t->GetFont();f.SetPointSize(f.GetPointSize()+4);f.SetWeight(wxFONTWEIGHT_BOLD);t->SetFont(f);}
         s->Add(t,0,wxALL|wxEXPAND,10);
         return t;
     }
     wxButton* button(wxWindow* p,wxSizer* s,int id,const wxString& text) {
-        auto* b=new wxButton(p,id,text);s->Add(b,0,wxALL,5);return b;
+        auto* b=new sc::ui::Button(p,id,text);s->Add(b,0,wxALL|wxEXPAND,3);return b;
     }
     void log(const wxString& s) {log_box->AppendText(s+"\n");}
     void choose(bool directory) {
@@ -275,7 +277,7 @@ class Frame final : public wxFrame {
                 "\nFS archives parsed: "+number(inv.fs_archives)+"\nFSU archives: "+number(inv.fsu_archives)+
                 "\nSprite groups: "+number(inv.fsu_resources)+"\nSprites: "+number(inv.fsu_sprites)+"\nWarnings: "+number(inv.warnings.size())+
                 "\n\nEdition language: "+w(sc::edition_language(inv)));
-            validation->SetLabel("INSTALL.DTA / FS / FSU directory and member bounds checked during scan.\n"+
+            validation->ChangeValue("INSTALL.DTA / FS / FSU directory and member bounds checked during scan.\n"+
                 number(inv.warnings.size())+" warning(s). See Log for details.\n"+
                 "Use Audit graphics coverage to check LZ and FSU decoding. Checksums are not yet implemented.");
             rebuild_blocks();refresh();
@@ -284,7 +286,7 @@ class Frame final : public wxFrame {
         } catch(const std::exception& e) {
             stop_play();active.reset();inv={};rebuild_blocks();refresh();
             stats->SetLabel("Scan failed. No active inventory.");
-            validation->SetLabel("No inventory.");
+            validation->ChangeValue("No inventory.");
             log("ERROR: "+w(e.what()));
             SetStatusText("Scan failed");
             wxMessageBox(w(e.what()),"Cannot scan source",wxOK|wxICON_ERROR,this);
@@ -915,9 +917,9 @@ class Frame final : public wxFrame {
         try{
             wxProgressDialog progress("Validate PAK","Reading dataset...",100,this,wxPD_APP_MODAL|wxPD_CAN_ABORT|wxPD_AUTO_HIDE);
             auto result=check_dataset(path(d.GetPath()),[&](const std::string& p){return progress.Pulse(w(p));});
-            progress.Update(100);validation->SetLabel(w(result));log(w(result));
+            progress.Update(100);validation->ChangeValue(w(result));log(w(result));
             wxMessageBox(w(result),"PAK validation",wxOK|wxICON_INFORMATION,this);
-        }catch(const std::exception& e){auto msg="PAK validation: "+w(e.what());validation->SetLabel(msg);log(msg);wxMessageBox(msg,"PAK validation",wxOK|wxICON_ERROR,this);}
+        }catch(const std::exception& e){auto msg="PAK validation: "+w(e.what());validation->ChangeValue(msg);log(msg);wxMessageBox(msg,"PAK validation",wxOK|wxICON_ERROR,this);}
     }
     void convert_modern(){
         using sc::pack::json;
@@ -1305,7 +1307,7 @@ class Frame final : public wxFrame {
             if(sc::compressed(a)||fmt=="DTA"||fmt=="ANM"||fmt=="PNM"||
                fmt=="ICO"||fmt=="BTN"||fmt=="CUR"||fmt=="GFK"||fmt=="CLK"||fmt=="FNT")ids.push_back(i);
         }
-        if(ids.empty()){validation->SetLabel("No graphics candidates in inventory.");return;}
+        if(ids.empty()){validation->ChangeValue("No graphics candidates in inventory.");return;}
         wxProgressDialog progress("Graphics coverage audit","Decoding actual images and animations...",static_cast<int>(ids.size()),this,wxPD_APP_MODAL|wxPD_CAN_ABORT|wxPD_AUTO_HIDE);
         struct Counts{std::size_t graphics{},other{},unknown{},failed{},frames{};};
         std::map<std::string,Counts> by_format;
@@ -1351,7 +1353,7 @@ class Frame final : public wxFrame {
         }
         report+="TOTAL | "+number(total.graphics)+" | "+number(total.other)+" | "+number(total.unknown)+" | "+number(total.failed)+" | "+number(total.frames)+"\n";
         report+=number(checked)+" / "+number(ids.size())+" candidates checked; "+number(inv.warnings.size())+" scan warnings."+(cancelled?wxString("\nCancelled."):wxString());
-        validation->SetLabel(report);log(report);
+        validation->ChangeValue(report);log(report);
     }
     void export_assets(bool all) {
         stop_play();
@@ -1389,7 +1391,7 @@ class Frame final : public wxFrame {
     }
 public:
     Frame():wxFrame(nullptr,wxID_ANY,"Spellcross Asset Converter",wxDefaultPosition,wxSize(1180,800)),timer(this) {
-        SetMinSize(wxSize(960,600));paint(this);
+        SetMinSize(FromDIP(wxSize(1000,680)));paint(this);SetFont(sc::ui::Font());
         auto* menu=new wxMenu;
         menu->Append(open_dir,"Open game &directory...");
         menu->Append(open_file,"Open &ISO / INSTALL.DTA / FS / FSU...");
@@ -1399,15 +1401,16 @@ public:
         auto* help=new wxMenu;help->Append(wxID_ABOUT,"&About");
         auto* bar=new wxMenuBar;bar->Append(menu,"&File");bar->Append(help,"&Help");SetMenuBar(bar);
         auto* root=new wxBoxSizer(wxVERTICAL);SetSizer(root);
-        auto* header=new wxPanel(this);paint(header,false);auto* hs=new wxBoxSizer(wxVERTICAL);header->SetSizer(hs);
+        auto* header=new sc::ui::Panel(this);auto* hs=new wxBoxSizer(wxVERTICAL);header->SetSizer(hs);
         label(header,hs,"SPELLCROSS  /  ASSET CONVERTER",true);
-        label(header,hs,"RELOADED TOOLKIT   |   v0.9.6   |   Original data inventory");
+        label(header,hs,"RELOADED TOOLKIT   |   v0.9.7   |   Original data inventory");
         root->Add(header,0,wxEXPAND);
-        tabs=new wxNotebook(this,wxID_ANY);root->Add(tabs,1,wxALL|wxEXPAND,10);
+        auto* page_nav=new wxBoxSizer(wxHORIZONTAL);root->Add(page_nav,0,wxEXPAND|wxLEFT|wxRIGHT,8);
+        tabs=new sc::ui::Book(this,this,page_nav);root->Add(tabs,1,wxALL|wxEXPAND,8);
         wxBoxSizer* s;
         auto* overview=page("Overview",s);
         label(overview,s,"Original game source",true);
-        source_label=label(overview,s,"No source selected");
+        source_label=new wxStaticText(overview,wxID_ANY,"No source selected",wxDefaultPosition,wxDefaultSize,wxST_ELLIPSIZE_MIDDLE);source_label->SetForegroundColour(fg);s->Add(source_label,0,wxEXPAND|wxALL,10);
         auto* buttons=new wxBoxSizer(wxHORIZONTAL);s->Add(buttons,0,wxALL,5);
         button(overview,buttons,open_dir,"Open directory");
         button(overview,buttons,open_file,"Open ISO / INSTALL.DTA / FS / FSU");
@@ -1415,26 +1418,27 @@ public:
         stats=label(overview,s,"Open original game data to build an inventory.");
         auto* browser=page("Asset Browser",s);
         auto* search=new wxBoxSizer(wxHORIZONTAL);s->Add(search,0,wxEXPAND|wxALL,6);
-        filter=new wxTextCtrl(browser,wxID_ANY);filter->SetHint("Search paths, names or formats");
+        filter=new wxTextCtrl(browser,wxID_ANY);paint(filter,false);filter->SetHint("Search paths, names or formats");
         search->Add(filter,1,wxALL|wxALIGN_CENTER_VERTICAL,4);
         kind=new wxChoice(browser,wxID_ANY);for(auto name:{"All assets","Sprites","Palettes","Compressed","Archives","Text / definitions","Maps"})kind->Append(name);
-        kind->SetSelection(0);search->Add(kind,0,wxALL|wxALIGN_CENTER_VERTICAL,4);
+        paint(kind,false);kind->SetSelection(0);search->Add(kind,0,wxALL|wxALIGN_CENTER_VERTICAL,4);
         count_label=new wxStaticText(browser,wxID_ANY,"0 matching records");count_label->SetForegroundColour(muted);
         search->Add(count_label,0,wxALL|wxALIGN_CENTER_VERTICAL,4);
         auto* split=new wxSplitterWindow(browser,wxID_ANY,wxDefaultPosition,wxDefaultSize,wxSP_LIVE_UPDATE|wxSP_3D);
-        split->SetMinimumPaneSize(230);split->SetSashGravity(0.35);
+        split->SetMinimumPaneSize(250);split->SetSashGravity(0.30);
         auto* left=new wxPanel(split);paint(left);auto* ls=new wxBoxSizer(wxVERTICAL);left->SetSizer(ls);
         tree=new wxTreeCtrl(left,wxID_ANY,wxDefaultPosition,wxDefaultSize,wxTR_HAS_BUTTONS|wxTR_LINES_AT_ROOT|wxTR_SINGLE);
         paint(tree,false);ls->Add(tree,1,wxEXPAND|wxALL,4);
         auto* right=new wxPanel(split);paint(right);auto* rs=new wxBoxSizer(wxVERTICAL);right->SetSizer(rs);
         selected_label=new wxStaticText(right,wxID_ANY,"Select an asset.",wxDefaultPosition,wxDefaultSize,wxST_ELLIPSIZE_END);
         selected_label->SetForegroundColour(fg);rs->Add(selected_label,0,wxEXPAND|wxALL,6);
-        auto* nav=new wxBoxSizer(wxHORIZONTAL);rs->Add(nav,0,wxEXPAND|wxLEFT|wxRIGHT,4);
+        auto* nav=new wxGridSizer(3,3,3);rs->Add(nav,0,wxEXPAND|wxLEFT|wxRIGHT,4);
         prev_button=button(right,nav,prev_id,"<");next_button=button(right,nav,next_id,">");play_button=button(right,nav,play_id,"Play sequence");
         button(right,nav,clear_id,"Clear");
         movie_button=button(right,nav,movie_id,"Play video");movie_button->Enable(false);
         prev_button->Enable(false);next_button->Enable(false);play_button->Enable(false);
-        preview_tabs=new wxNotebook(right,wxID_ANY);rs->Add(preview_tabs,1,wxEXPAND|wxALL,4);
+        auto* view_nav=new wxGridSizer(3,2,2);rs->Add(view_nav,0,wxEXPAND|wxLEFT|wxRIGHT,4);
+        preview_tabs=new sc::ui::Book(right,right,view_nav);rs->Add(preview_tabs,1,wxEXPAND|wxALL,4);
         auto* visual=new wxPanel(preview_tabs);paint(visual);auto* vs=new wxBoxSizer(wxVERTICAL);visual->SetSizer(vs);
         graphic=new Canvas(visual);vs->Add(graphic,1,wxEXPAND|wxALL,4);
         auto* zoom=new wxBoxSizer(wxHORIZONTAL);vs->Add(zoom,0,wxALIGN_CENTER);
@@ -1444,22 +1448,27 @@ public:
             auto* p=new wxTextCtrl(preview_tabs,wxID_ANY,"",wxDefaultPosition,wxDefaultSize,wxTE_MULTILINE|wxTE_READONLY|wxTE_DONTWRAP);
             paint(p,false);p->SetFont(wxFontInfo(10).Family(wxFONTFAMILY_TELETYPE));preview_tabs->AddPage(p,title);return p;
         };
-        raw_hex=text_page("Stored HEX");preview_box=text_page("Decoded HEX");metadata=text_page("Metadata");text_view=text_page("Text");structured_view=text_page("Structured JSON");
+        raw_hex=text_page("Stored HEX");preview_box=text_page("Decoded HEX");metadata=text_page("Metadata");text_view=text_page("Text");structured_view=text_page("JSON");
         encoding_choice=new wxChoice(right,wxID_ANY);for(auto enc:{"Auto (retail edition)","Auto (UTF-8 / CP895)","UTF-8","CP895","CP852","Windows-1250","Windows-1252"})encoding_choice->Append(enc);
-        encoding_choice->SetSelection(0);rs->Add(encoding_choice,0,wxEXPAND|wxLEFT|wxRIGHT,6);
+        paint(encoding_choice,false);encoding_choice->SetSelection(0);rs->Add(encoding_choice,0,wxEXPAND|wxLEFT|wxRIGHT,6);
         encoding_choice->Bind(wxEVT_CHOICE,[this](wxCommandEvent&){show_preview();});
-        auto* actions=new wxFlexGridSizer(2,2,2,2);rs->Add(actions,0,wxALL,2);
+        auto* actions=new wxGridSizer(2,2,2);rs->Add(actions,0,wxEXPAND|wxALL,4);
         export_button=button(right,actions,export_one,"Extract raw");export_button->Enable(false);
         decoded_button=button(right,actions,decoded_one,"Extract decoded");decoded_button->Enable(false);
         png_button=button(right,actions,png_one,"Export sprite PNG");png_button->Enable(false);
         group_button=button(right,actions,png_group,"Export group PNG");group_button->Enable(false);
-        split->SplitVertically(left,right,350);s->Add(split,1,wxEXPAND|wxALL,4);
+        split->SplitVertically(left,right,FromDIP(340));
+        split->Bind(wxEVT_SPLITTER_SASH_POS_CHANGING,[split](wxSplitterEvent& e){
+            int limit=split->GetClientSize().x-split->FromDIP(480);
+            if(limit>split->FromDIP(250)&&e.GetSashPosition()>limit)e.SetSashPosition(limit);
+        });
+        s->Add(split,1,wxEXPAND|wxALL,4);
         auto* browserBottom=new wxBoxSizer(wxHORIZONTAL);s->Add(browserBottom,0,wxEXPAND);
         button(browser,browserBottom,save_manifest,"Save inventory manifest");
-        auto* conversion=page("Extraction / Conversion",s);
+        auto* conversion=page("Conversion",s);
         label(conversion,s,"Modern game data (.pak)",true);
         label(conversion,s,"Choose all game data or one source archive.\nCreate logical PAK packages with shared indexed atlases, palettes and manifests.\nUnconverted assets and original containers are preserved.");
-        block_choice=new wxChoice(conversion,wxID_ANY);block_choice->Append("All game data");block_choice->SetSelection(0);s->Add(block_choice,0,wxEXPAND|wxALL,10);
+        block_choice=new wxChoice(conversion,wxID_ANY);block_choice->Append("All game data");block_choice->SetSelection(0);paint(block_choice,false);s->Add(block_choice,0,wxEXPAND|wxALL,10);
         label(conversion,s,"FFmpeg executable (optional, required for lossless video export)");
         ffmpeg_picker=new wxFilePickerCtrl(conversion,wxID_ANY,default_ffmpeg(),"Select FFmpeg executable",wxFileSelectorDefaultWildcardStr,wxDefaultPosition,wxDefaultSize,wxFLP_OPEN|wxFLP_USE_TEXTCTRL);
         s->Add(ffmpeg_picker,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,10);
@@ -1469,19 +1478,22 @@ public:
         label(conversion,s,"Export all parsed FS / FSU members to a fresh folder.\nStored bytes are preserved; For individual exports use Asset Browser.");
         all_button=button(conversion,s,export_all,"Extract all FS / FSU members");all_button->Enable(false);
         auto* valid=page("Validation",s);label(valid,s,"Structural checks",true);
-        validation=label(valid,s,"No inventory.");
-        button(valid,s,validate_id,"Audit graphics coverage");
-        button(valid,s,validate_pak_id,"Validate modern PAK dataset");
+        auto* checks=new wxBoxSizer(wxHORIZONTAL);s->Add(checks,0,wxEXPAND|wxALL,6);
+        button(valid,checks,validate_id,"Audit graphics coverage");
+        button(valid,checks,validate_pak_id,"Validate modern PAK dataset");
+        checks->AddStretchSpacer();
+        validation=new wxTextCtrl(valid,wxID_ANY,"No inventory.",wxDefaultPosition,wxDefaultSize,wxTE_MULTILINE|wxTE_READONLY|wxTE_DONTWRAP);
+        paint(validation,false);validation->SetFont(sc::ui::Font(10));s->Add(validation,1,wxEXPAND|wxALL,8);
         auto* logs=page("Log",s);label(logs,s,"Operation log",true);
         log_box=new wxTextCtrl(logs,wxID_ANY,"",wxDefaultPosition,wxDefaultSize,wxTE_MULTILINE|wxTE_READONLY);
         paint(log_box,false);s->Add(log_box,1,wxALL|wxEXPAND,10);
-        CreateStatusBar();SetStatusText("Ready - select original Spellcross data");
+        CreateStatusBar();paint(GetStatusBar());SetStatusText("Ready - select original Spellcross data");
         Bind(wxEVT_MENU,[this](wxCommandEvent&){choose(true);},open_dir);
         Bind(wxEVT_MENU,[this](wxCommandEvent&){choose(false);},open_file);
         Bind(wxEVT_MENU,[this](wxCommandEvent&){analyze();},scan_id);
         Bind(wxEVT_MENU,[this](wxCommandEvent&){export_manifest();},save_manifest);
         Bind(wxEVT_MENU,[this](wxCommandEvent&){Close();},wxID_EXIT);
-        Bind(wxEVT_MENU,[this](wxCommandEvent&){wxMessageBox("Spellcross Asset Converter 0.9.6\nPart of Spellcross Reloaded\nMIT license\nCopyright (c) 2026 Luboš Horák\nSpellcross Reloaded by Luboš Horák; foundations by Stanislav Mašláň.\nhttps://github.com/luboshorak/spellcross-reloaded\nCAN decoder: CPAL-1.0; libsmacker: LGPL-2.1-or-later.","About",wxOK|wxICON_INFORMATION,this);},wxID_ABOUT);
+        Bind(wxEVT_MENU,[this](wxCommandEvent&){wxMessageBox("Spellcross Asset Converter 0.9.7\nPart of Spellcross Reloaded\nMIT license\nCopyright (c) 2026 Luboš Horák\nSpellcross Reloaded by Luboš Horák; foundations by Stanislav Mašláň.\nhttps://github.com/luboshorak/spellcross-reloaded\nCAN decoder: CPAL-1.0; libsmacker: LGPL-2.1-or-later.","About",wxOK|wxICON_INFORMATION,this);},wxID_ABOUT);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){choose(true);},open_dir);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){choose(false);},open_file);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){analyze();},scan_id);
@@ -1516,7 +1528,7 @@ public:
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){convert_blocks();},batch_id);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){convert_modern();},modern_id);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){play_video();},movie_id);
-        tabs->Bind(wxEVT_NOTEBOOK_PAGE_CHANGED,[this](wxBookCtrlEvent& e){if(e.GetSelection()!=1)stop_play();e.Skip();});
+        tabs->changed=[this](int selected){if(selected!=1)stop_play();};
         Centre();
     }
 };
