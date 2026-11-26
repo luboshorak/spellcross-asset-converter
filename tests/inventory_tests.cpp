@@ -327,11 +327,27 @@ int main(){
             const std::string magic="SpellFSUcontextV1.0";
             B fsa(magic.begin(),magic.end());fsa.push_back(0);
             auto add32=[&](std::uint32_t n){auto p=fsa.size();fsa.resize(p+4);le(fsa,p,n);};
-            add32(1);fsa.push_back(4);fsa.push_back(0);fsa.insert(fsa.end(),{'T','E','S','T'});
+            add32(1);fsa.push_back(5);fsa.push_back(0);fsa.insert(fsa.end(),{'T','E','S','T',0});
             add32(1);add32(1);add32(0xfffffffeu);add32(3);add32(4);add32(5);
             add32(0);add32(6);add32(7);
             auto context_json=sc::fsu_context(fsa_asset,fsa);
             require(context_json&&context_json->find("[-2,3]")!=std::string::npos);
+            require(context_json->find("\"group\":\"TEST\"")!=std::string::npos);
+            const auto name_start=magic.size()+1+4+2;
+            auto old_fsa=fsa;old_fsa[name_start-2]=4;
+            old_fsa.erase(old_fsa.begin()+name_start+4);
+            require(sc::fsu_context(fsa_asset,old_fsa)==context_json);
+            auto reject_fsa=[&](const B& bytes){
+                bool rejected=false;try{sc::fsu_context(fsa_asset,bytes);}catch(const std::exception&){rejected=true;}require(rejected);
+            };
+            auto bad_name=fsa;bad_name[name_start+1]=0;reject_fsa(bad_name);
+            bad_name=fsa;bad_name[name_start+3]=0;reject_fsa(bad_name);
+            bad_name=fsa;bad_name[name_start-2]=1;
+            bad_name[name_start]=0;bad_name.erase(bad_name.begin()+name_start+1,bad_name.begin()+name_start+5);reject_fsa(bad_name);
+            auto duplicate=fsa;duplicate[magic.size()+1]=2;
+            B duplicate_name{5,0,'t','e','s','t',0};
+            duplicate.insert(duplicate.begin()+name_start+5,duplicate_name.begin(),duplicate_name.end());
+            reject_fsa(duplicate);
             Entries fsa_entries;
             fsa_entries["original.bin"].size=fsa.size();
             fsa_entries["records/1/fsu-context.json"].json=*context_json;
