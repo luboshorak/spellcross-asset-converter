@@ -69,3 +69,9 @@ ICO/BTN frames optionally declare `opaque_zero_display_index:254`; original pixe
 ### Contextual preview palettes (0.9.5)
 
 Palette assignment is per resource use: strategic shared chrome, page-specific hierarchy/units/options bank, tactical INFO.PALETA.NRM, tactical terrain. The assigned palette is a default presentation context, not a restriction on how the same indexed resource can be drawn. Original index/mask planes remain unchanged.
+
+### Retail tables and archival roles (0.9.12)
+
+PAK v1 keeps the original five record statuses for compatibility. An optional `role: "legacy-only"` on a raw record identifies explicitly recognized DOS executables, sound drivers and installation support resources; it does not discard bytes or imply all raw assets are optional. The audit separately counts legacy-only, placeholder (known damaged terrain with a synthetic frame), and unresolved legacy-required. `runtime_ready` remains false.
+
+`records/N/retail-table.json` uses schema `spellcross-retail-table`, version 1. Supported kinds: territory-adjacency (32 unsigned little-endian 32-bit masks, redundant zero-based bit index lists), gamma-table (11 rows of 64 values in 0..63), terrain-color-indices (11 exact bytes; slot semantics unverified), info-rgb-palette (768 exact bytes, role normal), info-index-filter (256 exact bytes, role dark or light), and empty-palette (empty values, original CRLF bytes). No inferred palette values or adjacency edges are added. Read-back checks shape, ranges, identity, source length and mask/list agreement. Original-byte parity is not independently verified. Original archive ownership and stable IDs are unchanged pending cross-package reference design.
