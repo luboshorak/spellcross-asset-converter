@@ -13,8 +13,9 @@ namespace {
 struct J {
     using A=std::vector<J>;using O=std::map<std::string,J>;
     // JSON numbers kept as strings with a distinct type, avoiding rounding.
-    struct N{std::string value;};
+    struct N{std::string value;bool operator==(const N&)const=default;};
     std::variant<std::nullptr_t,bool,N,std::string,A,O> v;
+    bool operator==(const J&)const=default;
     const O& obj()const{if(auto p=std::get_if<O>(&v))return *p;fail("Expected JSON object");}
     const A& arr()const{if(auto p=std::get_if<A>(&v))return *p;fail("Expected JSON array");}
     const std::string& str()const{if(auto p=std::get_if<std::string>(&v))return *p;fail("Expected JSON string");}
@@ -89,8 +90,16 @@ bool safe_entry(std::string_view s){
     while(!s.empty()){auto p=s.find('/');auto part=s.substr(0,p);if(part.empty()||part=="."||part=="..")return false;if(p==s.npos)break;s.remove_prefix(p+1);}
     return true;
 }
+bool has_resource_catalog(std::string_view root){
+    auto j=parse(root);schema(j,"spellcross-dataset");
+    auto catalog=j.get("resource_catalog");
+    if(!catalog)return false;
+    if(catalog->str()!="resources.json")fail("Unsupported resource catalog path");
+    return true;
+}
 std::vector<DatasetPackage> dataset_packages(std::string_view text){
     auto j=parse(text);schema(j,"spellcross-dataset");j.at("partial").boolean();j.at("runtime_ready").boolean();
+    if(auto catalog=j.get("resource_catalog");catalog&&catalog->str()!="resources.json")fail("Unsupported resource catalog path");
     std::vector<DatasetPackage> result;std::set<std::string> files,categories;
     for(auto& p:j.at("packages").arr()){
         auto file=p.at("file").str(),cat=p.at("category").str();
@@ -115,8 +124,8 @@ PackageSummary validate_package(const Entries& entries,std::string_view expected
         if(auto detail=r.get("detail"))row.detail=detail->str();
         auto& orig=r.at("original");auto& source=entry(entries,orig.at("entry").str());auto off=orig.at("offset").num(),n=orig.at("size").num();
         if(off>source.size||n>source.size-off)fail("Original range outside entry: "+id);
-        row.source_bytes=n;originals.insert(orig.at("entry").str());
-        if(auto fb=r.get("fallback")){size_is(entry(entries,fb->str()),n);originals.insert(fb->str());}
+        row.source_bytes=n;row.original_entry=orig.at("entry").str();row.original_offset=off;originals.insert(row.original_entry);
+        if(auto fb=r.get("fallback")){size_is(entry(entries,fb->str()),n);row.fallback_entry=fb->str();originals.insert(row.fallback_entry);}
         if(auto p=r.get("payload")){
             row.payload=p->str();row.payload_bytes=entry(entries,row.payload).size;
             payloads.emplace(id,row.payload);derived.insert(row.payload);
@@ -171,6 +180,7 @@ PackageSummary validate_package(const Entries& entries,std::string_view expected
             if(ordinal!=frame_counts[id]++)fail("Non-contiguous atlas frame ordinal: "+id);
             owners[id].insert(name);++out.frames;out.pixels+=w*h;
             auto& row=out.audit_records.at(audit_index.at(id));
+            row.atlas_entry=name;++row.atlas_frames;
             if(auto marker=f.get("synthetic_placeholder");marker&&marker->boolean()){
                 if(row.status!="failed"||row.format!="DTA"||out.category!="terrain"||
                    !row.name.ends_with("DEVAST.FS::DMA0_270.DTA")||row.source_bytes!=2248||
@@ -361,6 +371,90 @@ static std::string source_name_utf8(std::string_view bytes){
     }
     return result;
 }
+
+// Catalog input strings are already parsed UTF-8. Do NOT pass them through
+// pack::json (that encoder maps original source bytes to U+00xx).
+static std::string catalog_quote(std::string_view value){
+    std::ostringstream o;o<<'"';
+    constexpr char hex[]="0123456789abcdef";
+    for(unsigned char c:value){
+        if(c=='"'||c=='\\')o<<'\\'<<char(c);
+        else if(c<32)o<<"\\u00"<<hex[c>>4]<<hex[c&15];
+        else o<<char(c);
+    }
+    o<<'"';return o.str();
+}
+static std::string lookup_key(std::string_view name){
+    std::string out(name);
+    for(auto& c:out){
+        if(c=='\\')c='/';
+        else if(c>='a'&&c<='z')c=char(c-'a'+'A');
+    }
+    return out;
+}
+static std::string leaf_key(std::string_view name){
+    auto p=name.find_last_of("/\\:");
+    return lookup_key(p==name.npos?name:name.substr(p+1));
+}
+std::string resource_catalog(std::string_view root,const std::map<std::string,PackageSummary>& packages){
+    validate_dataset(root,packages);
+    auto j=parse(root);
+    struct Located {const std::string* file;const PackageSummary* package;const AuditRecord* row;};
+    std::map<std::string,Located> records;
+    std::map<std::string,std::vector<std::string>> names,leaves;
+    for(const auto& [file,p]:packages){
+        if(p.audit_records.size()!=p.records)fail("Resource catalog record count mismatch: "+file);
+        for(const auto& row:p.audit_records){
+            if(!records.emplace(row.id,Located{&file,&p,&row}).second)
+                fail("Duplicate record ID across PAK packages: "+row.id);
+        }
+    }
+    std::ostringstream o;
+    o<<"{\"schema\":\"spellcross-resource-catalog\",\"version\":1,\"partial\":"
+     <<(j.at("partial").boolean()?"true":"false");
+    if(auto language=j.get("edition_language"))o<<",\"edition_language\":"<<catalog_quote(language->str());
+    o<<",\"records\":[\n";
+    bool first=true;
+    for(const auto& [id,loc]:records){
+        const auto& r=*loc.row;
+        if(!first)o<<",\n";first=false;
+        o<<"{\"id\":"<<catalog_quote(id)<<",\"name\":"<<catalog_quote(r.name)
+         <<",\"package\":"<<catalog_quote(*loc.file)<<",\"category\":"<<catalog_quote(loc.package->category)
+         <<",\"format\":"<<catalog_quote(r.format)<<",\"status\":"<<catalog_quote(r.status)
+         <<",\"kind\":"<<catalog_quote(r.kind)<<",\"assessment\":"<<catalog_quote(r.assessment)
+         <<",\"original\":{\"entry\":"<<catalog_quote(r.original_entry)<<",\"offset\":"<<r.original_offset
+         <<",\"size\":"<<r.source_bytes<<"}";
+        if(!r.fallback_entry.empty())o<<",\"fallback\":"<<catalog_quote(r.fallback_entry);
+        if(!r.payload.empty())o<<",\"payload\":"<<catalog_quote(r.payload);
+        if(!r.atlas_entry.empty())o<<",\"atlas\":{\"entry\":"<<catalog_quote(r.atlas_entry)
+                                   <<",\"frames\":"<<r.atlas_frames<<"}";
+        o<<'}';
+        names[lookup_key(r.name)].push_back(id);
+        leaves[leaf_key(r.name)].push_back(id);
+    }
+    auto aliases=[&](const auto& map){
+        o<<'{';bool first_key=true;
+        for(const auto& [key,ids]:map){
+            if(!first_key)o<<',';first_key=false;
+            o<<catalog_quote(key)<<':[';
+            for(std::size_t i=0;i<ids.size();++i){if(i)o<<',';o<<catalog_quote(ids[i]);}
+            o<<']';
+        }
+        o<<'}';
+    };
+    o<<"\n],\"by_name\":";aliases(names);o<<",\"by_leaf\":";aliases(leaves);o<<"}\n";
+    auto result=o.str();
+    if(result.size()>64u*1024u*1024u)fail("Resource catalog exceeds limit");
+    return result;
+}
+void validate_resource_catalog(std::string_view catalog,std::string_view root,const std::map<std::string,PackageSummary>& packages){
+    // Structural equality allows harmless whitespace/key ordering changes,
+    // but rejects stale or altered owners, aliases, metadata and locators.
+    auto actual=parse(catalog);schema(actual,"spellcross-resource-catalog");
+    auto expected=parse(resource_catalog(root,packages));
+    if(!(actual==expected))fail("Resource catalog does not match validated PAK manifests");
+}
+
 AuditReport audit_report(std::string_view root,const std::map<std::string,PackageSummary>& packages,
                          const std::vector<SourceRecord>* expected_source){
     validate_dataset(root,packages);
@@ -428,7 +522,7 @@ AuditReport audit_report(std::string_view root,const std::map<std::string,Packag
         <<"Modern-payload means a recognized output representation exists, not gameplay parity.\n"
         <<"Shared primary payload sizes in TSV overlap; use physical totals for storage accounting.\n"
         <<"No source byte comparison, semantic cross-link validation or runtime certification performed.\n";
-    return {report.str(),rows.str()};
+    return {report.str(),rows.str(),resource_catalog(root,packages)};
 }
 
 std::uint32_t crc32_update(std::uint32_t state,const unsigned char* d,std::size_t n){
