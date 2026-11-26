@@ -23,6 +23,15 @@ struct Inventory {
 };
 std::string utf8(const std::filesystem::path&);
 Inventory scan(const std::filesystem::path& source);
+// Batch-only reader reuse; each thread has its own file handle. Ordinary
+// previews outside a session still reopen the source on each call.
+class PreviewSession {
+public:
+    PreviewSession();
+    ~PreviewSession();
+    PreviewSession(const PreviewSession&)=delete;
+    PreviewSession& operator=(const PreviewSession&)=delete;
+};
 std::vector<std::uint8_t> preview(const Asset&, std::size_t limit = 4096);
 // Exports exact stored bytes to a newly created child directory, never
 // interprets archive filenames as filesystem paths or overwrites old exports.
