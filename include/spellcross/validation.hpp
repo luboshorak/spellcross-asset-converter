@@ -32,6 +32,9 @@ std::vector<DatasetPackage> dataset_packages(std::string_view);
 PackageSummary validate_package(const Entries&,std::string_view expected_category);
 void validate_dataset(std::string_view,const std::map<std::string,PackageSummary>&);
 struct AuditReport {std::string summary,records_tsv;};
-AuditReport audit_report(std::string_view root,const std::map<std::string,PackageSummary>&);
+struct SourceRecord {std::string id,name,format,category;std::uint64_t size{};};
+// SourceRecord id/name are original byte strings, matching pack::stable_id.
+AuditReport audit_report(std::string_view root,const std::map<std::string,PackageSummary>&,
+                         const std::vector<SourceRecord>* expected_source=nullptr);
 std::uint32_t crc32_update(std::uint32_t state,const unsigned char* data,std::size_t n);
 }
