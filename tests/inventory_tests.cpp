@@ -5,6 +5,8 @@
 #include "spellcross/semantic.hpp"
 #include "spellcross/campaign.hpp"
 #include "spellcross/music.hpp"
+#include "spellcross/validation.hpp"
+#include "spellcross/presentation_data.hpp"
 #include <algorithm>
 #include <chrono>
 #include <fstream>
@@ -201,6 +203,37 @@ int main(){
         B xmi{'F','O','R','M',0,0,0,14,'X','M','I','D','E','V','N','T',0,0,0,2,0xff,0x2f};
         require(sc::music_kind(xmi)==sc::MusicKind::xmidi);sc::validate_xmidi(xmi);
         xmi[19]=99;bool bad_xmi=false;try{sc::validate_xmidi(xmi);}catch(const std::exception&){bad_xmi=true;}require(bad_xmi);
-        std::cout<<"Inventory, graphics, video, atlas, semantic, campaign and music tests passed\n";
+        using namespace sc::validation;
+        require(safe_entry("graphics/1/page.png")&&!safe_entry("../bad")&&!safe_entry("C:/bad"));
+        const unsigned char crc_test[]="123456789";require((crc32_update(0xffffffffu,crc_test,9)^0xffffffffu)==0xcbf43926u);
+        Entries entries;
+        entries["original.bin"].size=4;
+        entries["text.txt"].size=2;
+        entries["manifest.json"].json=R"({"schema":"spellcross-pak","version":1,"category":"common","partial":false,"records":[{"id":"a#1","name":"a","format":"TXT","status":"converted","original":{"entry":"original.bin","offset":1,"size":2},"payload":"text.txt"}],"graphics":[],"palettes":[]})";
+        auto summary=validate_package(entries,"common");require(summary.records==1&&summary.counts.at("converted")==1);
+        auto dataset=R"({"schema":"spellcross-dataset","version":1,"partial":false,"runtime_ready":false,"packages":[{"file":"common.pak","category":"common","records":1,"converted":1,"decoded":0,"raw":0,"failed":0,"containers":0}],"coverage_by_format":{"common/TXT":{"converted":1}},"atlas_metrics":{"frames":0,"pages":0,"source_pixels":0,"png_bytes":0}})";
+        validate_dataset(dataset,{{"common.pak",summary}});
+        entries["original.bin"].size=2;bool bad_range=false;try{validate_package(entries,"common");}catch(const std::exception&){bad_range=true;}require(bad_range);
+        entries["original.bin"].size=4;
+        entries["palette.rgb"].size=768;entries["palette.known"].size=256;
+        entries["i.png"]={12,4,4,{}};entries["m.png"]={12,4,4,{}};
+        entries["manifest.json"].json=R"({"schema":"spellcross-pak","version":1,"category":"units","partial":false,"records":[{"id":"a#1","name":"a","format":"FSU-SPRITE","status":"converted","original":{"entry":"original.bin","offset":0,"size":4},"payload":"frames.json"}],"graphics":["frames.json"],"palettes":[{"rgb":"palette.rgb","known":"palette.known"}]})";
+        entries["frames.json"].json=R"({"schema":"spellcross-atlas","version":1,"group":"a","pages":[{"indices":"i.png","opacity":"m.png"}],"frames":[{"id":"a#1","frame":0,"page":0,"rect":[1,1,3,3],"origin":[-3,4],"palette":0,"shadow_index":253,"trailing_bytes":0}]})";
+        auto graphics_summary=validate_package(entries,"units");require(graphics_summary.frames==1&&graphics_summary.pixels==9&&graphics_summary.png_bytes==24);
+        auto& atlas_json=entries["frames.json"].json;
+        atlas_json.pop_back();atlas_json+=R"(,"fsu_layout":{"schema":"spellcross-fsu-layout","version":1,"static_azimuths":1,"static_slopes":1,"animation_azimuths":0,"animation_slopes":0,"frames_per_sequence":0,"static_by_slope":[["a#1"]],"animation_by_azimuth_or_slope":[]}})";
+        validate_package(entries,"units");
+        auto good_layout=atlas_json;auto bad_id=atlas_json.rfind("a#1");atlas_json.replace(bad_id,3,"x#1");
+        bool bad_layout=false;try{validate_package(entries,"units");}catch(const std::exception&){bad_layout=true;}require(bad_layout);atlas_json=good_layout;
+        entries["m.png"].png_width=3;bool bad_atlas=false;try{validate_package(entries,"units");}catch(const std::exception&){bad_atlas=true;}require(bad_atlas);
+        bool duplicate=false;try{dataset_packages(R"({"schema":"spellcross-dataset","version":1,"version":1})");}catch(const std::exception&){duplicate=true;}require(duplicate);
+        auto layout=sc::fsu_layout("ABRMS",{"A00","A01","B00","B01"});require(layout.static_slopes==2&&layout.static_azimuths==2&&layout.stat[1][1]==3);
+        layout=sc::fsu_layout("TEST",{"A00","B00","A10","B10","F00","F01"});require(layout.frames==2&&layout.animation_azimuths==2&&layout.anim[1][1]==3&&layout.stat[0][0]==4);
+        sc::Asset ui;ui.name="COMMON.FS::MAINMENU.LZ";ui.format="LZ";ui.member=true;
+        auto menu=sc::decode_image(ui,B(640*480));require(menu&&menu->width==640&&menu->height==480&&menu->opaque[0]==255);
+        ui.name="COMMON.FS::LEVEL_02.CLK";ui.format="CLK";auto clk=sc::decode_image(ui,B{1,0,3,0,6,0,2,7,1,0});require(clk&&clk->indices==B({7,7,0}));
+        ui.name="COMMON.FS::DISPLAY.PL";ui.format="PL";auto lines=sc::language_table(ui,B{';','x','\r','\n','A','\r','B',26});require(lines&&lines->size()==2&&sc::language_for(ui,"cs")=="pl");
+        require(sc::narrative_display(B{'A','~','\r','\n','B','.',26})==B({'A',' ','B','.'}));
+        std::cout<<"Inventory, graphics, video, atlas, semantic, campaign, music and presentation tests passed\n";
     }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}
 }
