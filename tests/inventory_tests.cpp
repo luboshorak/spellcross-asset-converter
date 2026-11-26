@@ -4,6 +4,7 @@
 #include "spellcross/pack.hpp"
 #include "spellcross/semantic.hpp"
 #include "spellcross/campaign.hpp"
+#include "spellcross/music.hpp"
 #include <algorithm>
 #include <chrono>
 #include <fstream>
@@ -188,6 +189,12 @@ int main(){
         classes=sc::class_definition(script,B(source.begin(),source.end()));require(classes&&classes->find("\"max_health\":100")!=std::string::npos);
         script.name="SAMPLES.DEF";source="; [000] first\n#\n; next\nSOUND\n; random\nA\nB\n";
         classes=sc::class_definition(script,B(source.begin(),source.end()));require(classes&&classes->find("\"id\":2")!=std::string::npos&&classes->find("\"values\":[\"A\",\"B\"]")!=std::string::npos);
-        std::cout<<"Inventory, graphics, video, atlas, semantic and campaign tests passed\n";
+        B midi{'M','T','h','d',0,0,0,6,0,0,0,1,0,96,'M','T','r','k',0,0,0,4,0,0xff,0x2f,0};
+        require(sc::music_kind(midi)==sc::MusicKind::midi);sc::validate_midi(midi);
+        midi.pop_back();bool bad_midi=false;try{sc::validate_midi(midi);}catch(const std::exception&){bad_midi=true;}require(bad_midi);
+        B xmi{'F','O','R','M',0,0,0,14,'X','M','I','D','E','V','N','T',0,0,0,2,0xff,0x2f};
+        require(sc::music_kind(xmi)==sc::MusicKind::xmidi);sc::validate_xmidi(xmi);
+        xmi[19]=99;bool bad_xmi=false;try{sc::validate_xmidi(xmi);}catch(const std::exception&){bad_xmi=true;}require(bad_xmi);
+        std::cout<<"Inventory, graphics, video, atlas, semantic, campaign and music tests passed\n";
     }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}
 }
