@@ -1012,13 +1012,15 @@ class Frame final : public wxFrame {
                         auto base="records/"+std::to_string(i)+"/";
                         std::vector<sc::Sprite> images;
                         bool font_asset=false,synthetic=false;
+                        const bool legacy_only=status!="container"&&sc::legacy_support_asset(a);
                         MediaWork media;
                         bool movie_output=false;
                         std::string font_meta;
                         std::vector<std::pair<std::string,sc::Bytes>> derived;
                         auto add_text=[&](std::string name,const std::string& s){derived.emplace_back(std::move(name),sc::Bytes(s.begin(),s.end()));};
                         if(status!="container")try{
-                            if(sc::is_video(a)){
+                            if(legacy_only){detail="Original DOS installation/support resource; preserved for archival use";}
+                            else if(sc::is_video(a)){
                                 if(ffmpeg.empty()||!wxFileExists(ffmpeg))detail="FFmpeg unavailable; original movie retained";
                                 else{
                                     media.create(dest);
@@ -1038,7 +1040,9 @@ class Frame final : public wxFrame {
                             }else if(a.size<=64u*1024u*1024u){
                                 auto data=sc::decode_asset(a);
                                 auto music=sc::music_kind(data);
-                                if(auto rows=sc::language_table(a,data)){
+                                if(auto table=sc::retail_table(a,data)){
+                                    add_text("retail-table.json",table->json);status="converted";detail="Retail table: "+table->kind;payload=base+"retail-table.json";
+                                }else if(auto rows=sc::language_table(a,data)){
                                     add_text("language.json",localization_json(a,*rows));
                                     const auto decoded_text=decode_text(data,&a);auto utf=decoded_text.utf8_str();add_text("source.txt",std::string(utf.data(),utf.length()));
                                     status="converted";detail="Positional UTF-8 language table";payload=base+"language.json";
@@ -1170,6 +1174,7 @@ class Frame final : public wxFrame {
                         manifest<<"{\"id\":"<<json(ids[i])<<",\"name\":"<<json(a.name)<<",\"format\":"<<json(a.format)
                             <<",\"status\":"<<json(status)<<",\"detail\":"<<json(detail)
                             <<",\"original\":{\"entry\":"<<json(original_path)<<",\"offset\":"<<relative<<",\"size\":"<<a.size<<"}";
+                        if(legacy_only)manifest<<",\"role\":\"legacy-only\"";
                         if(!payload.empty())manifest<<",\"payload\":"<<json(payload);
                         if(!fallback.empty())manifest<<",\"fallback\":"<<json(fallback);
                         manifest<<"}";++done;
@@ -1608,7 +1613,7 @@ public:
         Bind(wxEVT_MENU,[this](wxCommandEvent&){analyze();},scan_id);
         Bind(wxEVT_MENU,[this](wxCommandEvent&){export_manifest();},save_manifest);
         Bind(wxEVT_MENU,[this](wxCommandEvent&){Close();},wxID_EXIT);
-        Bind(wxEVT_MENU,[this](wxCommandEvent&){wxMessageBox("Spellcross Asset Converter 0.9.11.2\nPart of Spellcross Reloaded\nMIT license\nCopyright (c) 2026 Luboš Horák\nSpellcross Reloaded by Luboš Horák; foundations by Stanislav Mašláň.\nhttps://github.com/luboshorak/spellcross-reloaded\nCAN decoder: CPAL-1.0; libsmacker: LGPL-2.1-or-later.","About",wxOK|wxICON_INFORMATION,this);},wxID_ABOUT);
+        Bind(wxEVT_MENU,[this](wxCommandEvent&){wxMessageBox("Spellcross Asset Converter 0.9.12\nPart of Spellcross Reloaded\nMIT license\nCopyright (c) 2026 Luboš Horák\nSpellcross Reloaded by Luboš Horák; foundations by Stanislav Mašláň.\nhttps://github.com/luboshorak/spellcross-reloaded\nCAN decoder: CPAL-1.0; libsmacker: LGPL-2.1-or-later.","About",wxOK|wxICON_INFORMATION,this);},wxID_ABOUT);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){choose(true);},open_dir);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){choose(false);},open_file);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){analyze();},scan_id);
