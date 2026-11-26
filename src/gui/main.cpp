@@ -909,6 +909,7 @@ class Frame final : public wxFrame {
             std::size_t done=0,converted=0,decoded=0,raw=0,failed=0,containers=0,pages=0,frames=0;
             std::uint64_t png_total=0,pixel_total=0;
             std::map<std::string,std::map<std::string,std::size_t>> coverage;
+            std::vector<std::pair<std::size_t,std::string>> unresolved;
             std::ostringstream root;root<<"{\n\"schema\":\"spellcross-dataset\",\"version\":1,\"partial\":"<<(partial?"true":"false")
                 <<",\"runtime_ready\":false,\"source_kind\":"<<json(inv.source_kind)
                 <<",\"edition_language\":"<<json(edition)
@@ -1164,6 +1165,8 @@ class Frame final : public wxFrame {
                             fallback=base+"original.bin";zip_original(zip,w(fallback),a);
                             if(original_path.empty()){original_path=fallback;relative=0;}
                         }
+                        if(!legacy_only&&!synthetic&&(status=="raw"||status=="failed"||status=="decoded"))
+                            unresolved.emplace_back(i,detail);
                         ++coverage[category+"/"+a.format][status];
                         if(status=="converted"){++converted;++pack_converted;}
                         else if(status=="decoded"){++decoded;++pack_decoded;}
@@ -1244,6 +1247,30 @@ class Frame final : public wxFrame {
             write_manifest_file(dest/"pak-audit.txt",verified.summary);
             write_manifest_file(dest/"pak-audit.tsv",verified.records_tsv);
             validation->ChangeValue(w(verified.summary));log(w(verified.summary));
+            // One small optional diagnostic archive, not part of the PAK dataset.
+            // Avoid large media copies; retain an explicit index of omitted assets.
+            if(!unresolved.empty()){
+                try{
+                    wxFFileOutputStream evidence(w(sc::utf8(dest/"pak-unresolved.zip")));
+                    if(!evidence.IsOk())throw std::runtime_error("Cannot create unresolved evidence");
+                    wxZipOutputStream zip(evidence);
+                    std::ostringstream catalogue;catalogue<<"id\tname\tformat\tstored_bytes\tentry\treason\n";
+                    std::uint64_t budget=16u*1024u*1024u;
+                    for(const auto& [i,reason]:unresolved){
+                        const auto& a=inv.assets[i];std::string location;
+                        if(a.size<=budget&&a.size<=4u*1024u*1024u){
+                            location="original/"+std::to_string(i)+".bin";
+                            zip_original(zip,w(location),a);budget-=a.size;
+                        }
+                        catalogue<<tsv(ids[i])<<'\t'<<tsv(a.name)<<'\t'<<a.format<<'\t'<<a.size<<'\t'<<location<<'\t'<<tsv(reason)<<'\n';
+                    }
+                    zip_string(zip,"unresolved.tsv",catalogue.str());
+                    if(!zip.Close()||!evidence.Close())throw std::runtime_error("Cannot finalize unresolved evidence");
+                }catch(const std::exception& e){
+                    std::error_code ec;std::filesystem::remove(dest/"pak-unresolved.zip",ec);
+                    log("Optional unresolved evidence: "+w(e.what()));
+                }
+            }
             progress.Update(static_cast<int>(total));
             auto summary=number(packages.size())+" PAK packages\n"+number(converted)+" converted, "+number(decoded)+" decoded, "+number(raw)+" raw, "+number(failed)+" failed, "+number(containers)+" original containers.\n"+
                 number(frames)+" atlas frames / "+number(pages)+" pages; "+number(png_total)+" PNG bytes.\n"+
