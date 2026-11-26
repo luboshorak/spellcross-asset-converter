@@ -189,6 +189,12 @@ int main(){
         classes=sc::class_definition(script,B(source.begin(),source.end()));require(classes&&classes->find("\"max_health\":100")!=std::string::npos);
         script.name="SAMPLES.DEF";source="; [000] first\n#\n; next\nSOUND\n; random\nA\nB\n";
         classes=sc::class_definition(script,B(source.begin(),source.end()));require(classes&&classes->find("\"id\":2")!=std::string::npos&&classes->find("\"values\":[\"A\",\"B\"]")!=std::string::npos);
+        // DP2 stored as loose files: its companion audio has a different backing file.
+        auto companion=sc::pcm_wave(std::vector<std::int16_t>{0,1,-1},11025,1);
+        write(t.p/"clip.wav",companion);
+        sc::Asset companion_asset{t.p/"clip.wav","clip.wav","WAV",0,companion.size(),false};
+        sc::Inventory clip_inv;clip_inv.assets={clip,companion_asset};
+        auto with_audio=sc::decode_video(clip_inv,clip);require(with_audio.wave==companion);
         B midi{'M','T','h','d',0,0,0,6,0,0,0,1,0,96,'M','T','r','k',0,0,0,4,0,0xff,0x2f,0};
         require(sc::music_kind(midi)==sc::MusicKind::midi);sc::validate_midi(midi);
         midi.pop_back();bool bad_midi=false;try{sc::validate_midi(midi);}catch(const std::exception&){bad_midi=true;}require(bad_midi);

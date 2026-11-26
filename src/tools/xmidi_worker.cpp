@@ -6,7 +6,13 @@
 #include <fstream>
 #include <memory>
 #include <iostream>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 int main(int argc,char** argv){
+#ifdef _WIN32
+    SetErrorMode(SEM_FAILCRITICALERRORS|SEM_NOGPFAULTERRORBOX|SEM_NOOPENFILEERRORBOX);
+#endif
     try{
         if(argc!=3)return 2;
         auto input=std::filesystem::u8path(argv[1]),output=std::filesystem::u8path(argv[2]);

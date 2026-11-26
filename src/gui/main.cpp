@@ -641,9 +641,16 @@ class Frame final : public wxFrame {
     static void run_media(const wxString& exe,const std::filesystem::path& dir,std::vector<wxString> args){
         if(exe.empty()||!wxFileExists(exe))throw std::runtime_error("Required media executable not found");
         args.insert(args.begin(),exe);
-        args.emplace_back(); // wxExecute argv is terminated by an empty wxString.
+        // wxWidgets 3.2 expects a null-terminated array of wide C strings.
+        // Store the wide strings independently so pointers survive conversion
+        // on both UTF-8 and wide-string wxWidgets builds.
+        std::vector<std::wstring> wide;wide.reserve(args.size());
+        for(const auto& arg:args)wide.push_back(arg.ToStdWstring());
+        std::vector<const wchar_t*> argv;argv.reserve(wide.size()+1);
+        for(const auto& arg:wide)argv.push_back(arg.c_str());
+        argv.push_back(nullptr);
         wxExecuteEnv env;env.cwd=w(sc::utf8(dir));
-        auto code=wxExecute(args.data(),wxEXEC_SYNC,nullptr,&env);
+        auto code=wxExecute(argv.data(),wxEXEC_SYNC|wxEXEC_HIDE_CONSOLE,nullptr,&env);
         if(code!=0)throw std::runtime_error("Media process failed (exit "+std::to_string(code)+")");
     }
     static sc::Bytes read_media(const std::filesystem::path& p,std::size_t limit){
