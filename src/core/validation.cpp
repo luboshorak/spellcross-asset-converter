@@ -744,6 +744,211 @@ void validate_resource_catalog(std::string_view catalog,std::string_view root,co
     if(!(actual==expected))fail("Resource catalog does not match validated PAK manifests");
 }
 
+
+namespace {
+struct GameAudit {std::string json,tsv,summary;};
+struct Target {
+    std::string package,id,entry,kind;
+    bool usable{},placeholder{};
+    const AtlasGroup* atlas{};
+};
+using TargetIndex=std::map<std::tuple<std::string,std::string,std::string>,std::vector<Target>>;
+static std::string archive_scope(std::string_view name){
+    auto p=name.rfind("::");return p==name.npos?"":game_leaf(name.substr(0,p));
+}
+static std::string alias_key(std::string name){return game_upper(std::move(name));}
+static bool empty_target(std::string_view s){return s.empty()||s=="NONE"||s=="#"||s=="-";}
+static void json_strings(std::ostream& out,const std::vector<std::string>& values){
+    out<<'[';for(std::size_t i=0;i<values.size();++i){if(i)out<<',';out<<catalog_quote(values[i]);}out<<']';
+}
+static void json_counts(std::ostream& out,const std::map<std::string,std::uint64_t>& values){
+    out<<'{';bool first=true;
+    for(const auto& [key,n]:values){if(!first)out<<',';first=false;out<<catalog_quote(key)<<':'<<n;}
+    out<<'}';
+}
+static void json_target(std::ostream& o,const Target& t){
+    o<<"{\"package\":"<<catalog_quote(t.package)<<",\"id\":"<<catalog_quote(t.id)
+     <<",\"entry\":"<<catalog_quote(t.entry)<<",\"kind\":"<<catalog_quote(t.kind)<<"}";
+}
+static GameAudit game_audit(std::string_view root,const std::map<std::string,PackageSummary>& packages){
+    const bool partial=parse(root).at("partial").boolean();
+    TargetIndex index;
+    std::map<std::string,std::uint64_t> coverage,unknown,results;
+    std::vector<std::pair<std::string,const AtlasGroup*>> groups;
+    std::vector<const FsuContextRecord*> contexts;
+    auto put=[&](const std::string& kind,const std::string& scope,const std::string& name,const Target& target){
+        auto key=alias_key(name);if(!key.empty())index[{kind,scope,key}].push_back(target);
+    };
+    for(const auto& [file,p]:packages){
+        for(const auto& [k,n]:p.metadata_coverage)coverage[k]+=n;
+        for(const auto& [k,n]:p.unreviewed_commands)unknown[k]+=n;
+        for(const auto& r:p.audit_records){
+            const auto leaf=game_leaf(r.name),scope=archive_scope(r.name);
+            Target t{file,r.id,r.payload,r.kind,r.status=="converted",r.assessment=="placeholder",nullptr};
+            auto add=[&](const char* kind,bool stem=true){
+                put(kind,scope,leaf,t);auto base=game_stem(leaf);
+                if(stem&&base!=leaf)put(kind,scope,base,t);
+            };
+            const bool image=!r.atlas_entry.empty()&&(r.kind=="indexed-atlas"||r.kind=="synthetic-placeholder");
+            if(scope=="T11.FS"||scope=="PUST.FS"||scope=="DEVAST.FS"){
+                if(r.format=="DTA"&&(image||r.status=="raw"||r.status=="failed"))add("terrain-sprite");
+                if(r.format=="ANM")add("anm");
+                if(r.format=="PNM")add("pnm");
+            }
+            if(scope=="COMMON.FS"){
+                if(r.format=="PNM")add("pnm");
+                if(image&&r.format!="PNM"&&r.format!="ANM")add("graphic");
+                if(r.kind=="tactical-map"||((r.format=="DTA"||r.format=="MAP")&&r.status!="converted"))add("map");
+                if(r.format=="DEF"||r.format=="TUT")add("script");
+            }
+            if(scope=="INFO.FS"&&r.format=="LZ"&&(image||r.status!="converted"))add("info-graphic");
+            if(scope=="SAMPLES.FS")add("sample",false);
+            if(scope=="MUSIC.FS")add("music");
+            if(scope=="MOVIE.FS"||scope=="SPEAKER.FS"){
+                if(r.format=="CAN"||r.format=="DPK"||r.format=="DP2"||r.format=="SMK")add("movie");
+            }
+            if(scope=="TEXTS.FS")add("text",false);
+        }
+        for(const auto& g:p.atlas_groups){
+            auto scope=archive_scope(g.group);
+            if(scope!="UNITS.FSU")continue;
+            Target t{file,g.group,g.entry,"atlas-group",g.fsu_layout,false,&g};
+            put("atlas-group","UNITS.FSU",game_leaf(g.group),t);
+            groups.emplace_back(file,&g);
+            ++coverage["fsu-groups"];
+            if(g.fsu_layout)++coverage["fsu-groups-with-layout"];
+            else ++coverage["fsu-groups-without-layout"];
+        }
+        for(const auto& d:p.definitions)for(const auto& id:d.ids){
+            Target t{file,d.source,id,"definition",true,false,nullptr};
+            put("definition",d.kind,id,t);
+        }
+        for(const auto& c:p.fsu_contexts)contexts.push_back(&c);
+    }
+    auto find=[&](const std::string& kind,const std::string& scope,const std::string& target)->const std::vector<Target>&{
+        static const std::vector<Target> empty;
+        auto it=index.find({kind,scope,alias_key(target)});
+        return it==index.end()?empty:it->second;
+    };
+    auto missing=partial?"not-in-selection":"missing";
+    std::ostringstream json,tsv,report;
+    json<<"{\"schema\":\"spellcross-game-metadata\",\"version\":1,\"partial\":"<<(partial?"true":"false")
+        <<",\"runtime_certified\":false,\"definitions\":[";
+    bool first=true;
+    for(const auto& [file,p]:packages)for(const auto& d:p.definitions){
+        if(!first)json<<',';first=false;
+        json<<"{\"source\":"<<catalog_quote(d.source)<<",\"kind\":"<<catalog_quote(d.kind)<<",\"ids\":";
+        json_strings(json,d.ids);json<<'}';
+    }
+    json<<"],\"script_blocks\":[";
+    first=true;
+    for(const auto& [file,p]:packages)for(const auto& b:p.game_blocks){
+        if(!first)json<<',';first=false;
+        json<<"{\"source\":"<<catalog_quote(b.source)<<",\"domain\":"<<catalog_quote(b.domain)
+            <<",\"keyword\":"<<catalog_quote(b.keyword)<<",\"key\":"<<catalog_quote(b.key)<<",\"line\":"<<b.line<<",\"args\":";
+        json_strings(json,b.args);json<<",\"commands\":[";
+        for(std::size_t i=0;i<b.commands.size();++i){
+            if(i)json<<',';const auto& c=b.commands[i];
+            json<<"{\"line\":"<<c.line<<",\"keyword\":"<<catalog_quote(c.keyword)<<",\"args\":";
+            json_strings(json,c.args);json<<'}';
+        }
+        json<<"]}";
+    }
+    json<<"],\"references\":[\n";first=true;
+    tsv<<"source\tfield\tkind\tscope\ttarget\tresult\tcandidate_count\tcandidate_locators\n";
+    auto emit=[&](const GameReference& ref,const std::string& status,const std::vector<Target>& candidates){
+        ++results[status];
+        if(!first)json<<",\n";first=false;
+        json<<"{\"source\":"<<catalog_quote(ref.source)<<",\"field\":"<<catalog_quote(ref.field)
+            <<",\"kind\":"<<catalog_quote(ref.kind)<<",\"scope\":"<<catalog_quote(ref.scope)
+            <<",\"target\":"<<catalog_quote(ref.target)<<",\"result\":"<<catalog_quote(status);
+        if(ref.frame_limit)json<<",\"frame_limit\":"<<ref.frame_limit;
+        json<<",\"candidates\":[";
+        std::string locators;
+        for(std::size_t i=0;i<candidates.size();++i){
+            if(i){json<<',';locators+=" | ";}
+            json_target(json,candidates[i]);
+            locators+=candidates[i].package+"::"+candidates[i].id+"::"+candidates[i].entry;
+        }
+        json<<"]}";
+        tsv<<audit_cell(ref.source)<<'\t'<<audit_cell(ref.field)<<'\t'<<audit_cell(ref.kind)<<'\t'
+           <<audit_cell(ref.scope)<<'\t'<<audit_cell(ref.target)<<'\t'<<status<<'\t'<<candidates.size()<<'\t'<<audit_cell(locators)<<'\n';
+    };
+    for(const auto& [file,p]:packages)for(const auto& ref:p.game_references){
+        const auto key=alias_key(ref.target);
+        if(empty_target(key)){
+            bool required=ref.field.ends_with(".graphics")||ref.field.starts_with("ground.sprites[");
+            emit(ref,required?"missing":"optional-empty",{});continue;
+        }
+        const auto& candidates=find(ref.kind,ref.scope,ref.target);
+        std::string status;
+        if(candidates.empty())status=missing;
+        else if(candidates.size()>1)status="ambiguous";
+        else if(candidates[0].placeholder)status="placeholder";
+        else if(!candidates[0].usable)status="unsupported-target";
+        else if(ref.frame_limit&&candidates[0].atlas&&ref.frame_limit>candidates[0].atlas->sequence_frames)
+            status="frame-limit-review";
+        else status="resolved";
+        emit(ref,status,candidates);
+    }
+    // A supplied editor context is optional. Verify actual group shape,
+    // never substitute guessed coordinates when absent or mismatched.
+    std::map<std::string,std::vector<const FsuContextRecord*>> context_index;
+    for(auto c:contexts){
+        context_index[game_upper(c->group)].push_back(c);
+        auto& candidates=find("atlas-group","UNITS.FSU",c->group);
+        std::string status;
+        if(candidates.empty())status=missing;
+        else if(candidates.size()>1)status="ambiguous";
+        else if(!candidates[0].usable)status="unsupported-target";
+        else{
+            const auto& g=*candidates[0].atlas;
+            bool match=c->static_azimuths.size()==g.static_slopes&&c->animation_origins==g.animation_rows&&
+                std::all_of(c->static_azimuths.begin(),c->static_azimuths.end(),[&](auto n){return n==g.static_azimuths;});
+            status=match?"resolved":"context-shape-review";
+        }
+        emit({c->source,"fire-context."+c->group,"atlas-group",c->group,"UNITS.FSU"},status,candidates);
+    }
+    json<<"\n],\"fsu_context_coverage\":[";
+    first=true;
+    for(const auto& [file,g]:groups){
+        auto it=context_index.find(game_leaf(g->group));
+        std::string state="not-supplied";
+        if(it!=context_index.end()){
+            if(it->second.size()!=1)state="ambiguous";
+            else if(!g->fsu_layout)state="layout-unavailable";
+            else{
+                auto c=it->second.front();
+                bool match=c->static_azimuths.size()==g->static_slopes&&c->animation_origins==g->animation_rows&&
+                    std::all_of(c->static_azimuths.begin(),c->static_azimuths.end(),[&](auto n){return n==g->static_azimuths;});
+                state=match?"supplied-shape-match":"shape-review";
+            }
+        }
+        ++coverage["fsu-fire-context:"+state];
+        if(!first)json<<',';first=false;
+        json<<"{\"package\":"<<catalog_quote(file)<<",\"group\":"<<catalog_quote(g->group)
+            <<",\"atlas\":"<<catalog_quote(g->entry)<<",\"fire_context\":"<<catalog_quote(state)
+            <<",\"animation_timing\":\"unverified\"}";
+    }
+    json<<"],\"coverage\":";json_counts(json,coverage);
+    json<<",\"unreviewed_commands\":";json_counts(json,unknown);
+    json<<",\"reference_counts\":";json_counts(json,results);json<<"}\n";
+    report<<"\nGAME METADATA / REFERENCE AUDIT (known rules only)\n";
+    for(const auto& [k,n]:coverage)report<<k<<": "<<n<<"\n";
+    report<<"\nREFERENCE RESULTS\n";
+    for(auto k:{"resolved","optional-empty","placeholder","missing","not-in-selection","ambiguous","unsupported-target","frame-limit-review","context-shape-review"})
+        report<<k<<": "<<count(results,k)<<"\n";
+    report<<"\nUNREVIEWED SCRIPT COMMANDS (not automatically treated as valid)\n";
+    for(const auto& [k,n]:unknown)report<<k<<": "<<n<<"\n";
+    report<<"See game-metadata.json and game-references.tsv for exact source fields and candidate locators.\n"
+          <<"Reference findings do not invalidate structurally intact PAKs; runtime certification remains false.\n"
+          <<"Animation timing, absent FSA origins, script execution and other unreviewed mechanics are not certified.\n";
+    auto text=json.str();
+    if(text.size()>64u*1024u*1024u)fail("Game metadata exceeds limit");
+    return {std::move(text),tsv.str(),report.str()};
+}
+}
+
 AuditReport audit_report(std::string_view root,const std::map<std::string,PackageSummary>& packages,
                          const std::vector<SourceRecord>* expected_source){
     validate_dataset(root,packages);
@@ -810,8 +1015,10 @@ AuditReport audit_report(std::string_view root,const std::map<std::string,Packag
     report<<"\nSee pak-audit.tsv for every record, conversion reason and review notes.\n"
         <<"Modern-payload means a recognized output representation exists, not gameplay parity.\n"
         <<"Shared primary payload sizes in TSV overlap; use physical totals for storage accounting.\n"
-        <<"No source byte comparison, semantic cross-link validation or runtime certification performed.\n";
-    return {report.str(),rows.str(),resource_catalog(root,packages)};
+        <<"No independent original-source byte comparison or runtime certification performed. Known semantic link rules are audited below.\n";
+    auto game=game_audit(root,packages);
+    report<<game.summary;
+    return {report.str(),rows.str(),resource_catalog(root,packages),std::move(game.json),std::move(game.tsv)};
 }
 
 std::uint32_t crc32_update(std::uint32_t state,const unsigned char* d,std::size_t n){
