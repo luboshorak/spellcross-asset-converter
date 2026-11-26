@@ -102,6 +102,23 @@ int main(){
         sc::Asset portrait;portrait.name="INFO.FS::AMX13_1.LZ";portrait.format="LZ";portrait.member=true;
         auto art=sc::decode_image(portrait,B(437*390,0));
         require(art&&art->width==437&&art->height==390&&art->opaque[0]==255);
-        std::cout<<"Inventory, graphics and archive conversion tests passed\n";
+        // Lazy nested LZ -> FS -> TXT, and a PNM frame table.
+        auto inner=lz(fsdata);auto outer=lz(inner);write(t.p/"NESTED.LZ",outer);
+        sc::Asset nested{t.p/"NESTED.LZ","NESTED.LZ","LZ",0,outer.size(),false};
+        auto first=sc::layer_children(nested,{});require(first.size()==1&&first[0].format=="LZ");
+        sc::LayerPath recipe{first[0]};
+        auto second=sc::layer_children(nested,recipe);require(second.size()==1&&second[0].format=="DECODED");
+        // Test a valid nested FS without the deliberately unsafe filename fixture.
+        B clean=fsdata;str(clean,25,"EMPTY.LZ");auto packed=lz(clean);write(t.p/"NESTED.LZ",packed);nested.size=packed.size();
+        auto archive=sc::layer_children(nested,{});require(archive.size()==1&&archive[0].format=="FS");
+        recipe={archive[0]};auto children=sc::layer_children(nested,recipe);require(children.size()==2);
+        recipe.push_back(children[0]);require(sc::layer_bytes(nested,recipe)==B({'a','b','c'}));
+        B pnm(5+icon_data.size());pnm[0]=1;le(pnm,1,5);
+        std::copy(icon_data.begin(),icon_data.end(),pnm.begin()+5);write(t.p/"ANIM.PNM",pnm);
+        sc::Asset anim{t.p/"ANIM.PNM","ANIM.PNM","PNM",0,pnm.size(),false};
+        auto frames=sc::layer_children(anim,{});require(frames.size()==1&&frames[0].format=="PNM-FRAME");
+        auto frame=sc::layer_image(anim,{frames[0]},sc::layer_bytes(anim,{frames[0]}));
+        require(frame&&frame->width==3&&frame->opaque[0]==0&&frame->opaque[1]==255);
+        std::cout<<"Inventory, graphics and recursive browser tests passed\n";
     }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}
 }
