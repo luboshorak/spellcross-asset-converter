@@ -41,3 +41,7 @@ with the converter.
 ### Semantic extensions (0.7.0)
 
 WAV payloads contain signed little-endian PCM16 with original sample rate and channel count; no resampling. Unit definitions have schema spellcross-units and original_hex per record, including unmapped bytes. Bitmap-font records point to font.json, which references the atlas by path and record ID; frame ordinal is original byte-code position, including generated control and space glyphs. Glyph index 1 means foreground, 0 background. Glyph width is the atlas rectangle width; spacing is separate. Coverage counts in the root manifest are per category/format and status; containers are not counted as converted assets. An asset marked converted need not yet have all runtime semantics mapped.
+
+### Campaign extensions (0.8.0)
+
+See [campaign-v1.md](campaign-v1.md) for the ordered script representation and eight-layer tactical map payload. Map binary paths in map.json are relative to that record's directory. Existing original-container ownership is retained (e.g. COMMON.FS maps and scripts live in common.pak); moving them across packages without duplicating source bytes requires a later cross-package reference contract. Unknown script commands are preserved without interpretation. The runtime_ready field remains false.

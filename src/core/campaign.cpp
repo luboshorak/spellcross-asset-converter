@@ -121,9 +121,10 @@ std::optional<MapPayload> tactical_map(const Asset& a,Span d){
     // DTA also denotes terrain tile resources. Version byte + known terrain
     // header distinguish retail tactical maps from their graphics.
     if(a.format!="DTA"||d.size()<26||d[8]!=0x12)return std::nullopt;
-    Reader r{d};auto l1off=r.u32(),l1=r.count(4095);r.u8();
+    Reader r{d};auto l1off=r.u32(),l1=r.u32();r.u8();
     auto w=r.u16(),h=r.u16();auto terrain=r.fixed(13);
     auto t=lower(terrain);if(t!="t11"&&t!="pust"&&t!="devast")return std::nullopt;
+    if(l1>4095)throw std::runtime_error("Map L1 table exceeds 12-bit index range");
     std::size_t cells=std::size_t(w)*h;
     if(!w||!h||cells>1000000||!l1)throw std::runtime_error("Invalid map dimensions or L1 table");
     MapPayload out;std::ostringstream o;
