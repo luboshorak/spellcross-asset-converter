@@ -460,6 +460,7 @@ class Frame final : public wxFrame {
                 wxFFileOutputStream file(w(sc::utf8(dest/filename)));
                 if(!file.IsOk())throw std::runtime_error("Cannot open ZIP output");
                 wxZipOutputStream zip(file);
+                zip.SetFormat(wxZIP_FORMAT_ZIP64);
                 std::ostringstream manifest;manifest<<"id\tlogical_name\tformat\tstored_size\tstatus\tdetail\n";
                 for(auto id:ids){
                     const auto& a=inv.assets[id];

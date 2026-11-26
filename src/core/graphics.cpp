@@ -130,18 +130,41 @@ std::string block_name(const Asset& a){
     if(a.format=="FS"||a.format=="FSU")return a.name;
     return {};
 }
+static bool in_archive(const Asset& a,std::string_view archive){
+    auto block=block_name(a);
+    auto slash=block.find_last_of("/\\");
+    if(slash!=std::string::npos)block=block.substr(slash+1);
+    for(auto& c:block)if(c>='a'&&c<='z')c-='a'-'A';
+    return a.member&&block==archive;
+}
 bool is_text_asset(const Asset& a,std::span<const std::uint8_t> d){
     if(d.empty())return false;
     bool named=a.format=="DEF"||a.format=="TXT"||a.format=="BRF"||a.format=="TUT"||
         a.format=="ENG"||a.format=="CZE"||a.format=="POL"||a.format=="ITA"||
         a.format=="CZ"||a.format=="EN"||a.format=="PL"||a.format=="IT"||
-        a.format=="INI"||a.format=="CSV";
+        a.format=="INI"||a.format=="CSV"||
+        in_archive(a,"TEXTS.FS")||(in_archive(a,"RESEARCH.FS")&&a.format=="INF")||
+        (in_archive(a,"INFO.FS")&&a.format=="LST");
     if(!named)return false;
     for(auto b:d)if(b<32&&b!=9&&b!=10&&b!=13)return false;
     return true;
 }
 Palette asset_palette(const Inventory& inv,const Asset& a,const Palette& tactical){
     auto n=upper_name(a);
+    if(in_archive(a,"INFO.FS")&&a.format=="LZ"){
+        Palette p{};
+        for(unsigned i=0;i<256;++i)for(int c=0;c<3;++c)p.rgb[i*3+c]=static_cast<std::uint8_t>(i);
+        bool chrome=n=="IBG_768.LZ"||n=="INFOPAN.LZ"||n=="INFOLSTA.LZ";
+        auto wanted=chrome?std::string("PALETA.NRM"):n.substr(0,n.size()-3)+".PAL";
+        for(auto& entry:inv.assets){
+            if(block_name(entry)!=block_name(a)||upper_name(entry)!=wanted)continue;
+            const unsigned count=chrome?256:192;
+            if(entry.size<count*3)continue;
+            try{auto data=preview(entry,count*3);std::copy(data.begin(),data.end(),p.rgb.begin());
+                std::fill_n(p.known.begin(),count,true);return p;}catch(const std::exception&){}
+        }
+        return p;
+    }
     if(!((n.starts_with("VM")&&(a.format=="ICO"||a.format=="BTN"))||n=="LASTTERT.ICO"))return tactical;
     Palette p=tactical;
     auto bank=[&](std::string_view suffix,unsigned first,unsigned count){
@@ -186,7 +209,14 @@ std::optional<Sprite> decode_image(const Asset& a,std::span<const std::uint8_t> 
     std::size_t start=0;
     bool opaque_zero=false;
     auto n=upper_name(a);
-    if(a.format=="CUR"){
+    if(in_archive(a,"INFO.FS")&&a.format=="LZ"){
+        if(n=="IBG_768.LZ"){s.width=1024;s.height=768;opaque_zero=true;}
+        else if(n=="INFOPAN.LZ"){s.width=640;s.height=480;}
+        else if(n=="INFOLSTA.LZ"){s.width=433;s.height=63;}
+        else{s.width=437;s.height=390;opaque_zero=true;}
+        const auto expected=std::size_t(s.width)*s.height;
+        if(d.size()<expected||d.size()>expected+2)return std::nullopt;
+    }else if(a.format=="CUR"){
         if(d.size()<2)throw std::runtime_error("Truncated CUR header");
         s.width=d[0];s.height=d[1];start=2;
     }else if(a.format=="GFK"){s.width=21;s.height=21;}
