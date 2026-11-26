@@ -41,7 +41,7 @@ struct GameBlock {
     std::vector<std::string> args;
     std::vector<GameCommand> commands;
 };
-struct FsuContextRecord {std::string source,group;std::vector<std::uint64_t> static_azimuths;std::uint64_t animation_origins{};};
+struct FsuContextRecord {std::string source,group;std::vector<std::uint64_t> static_azimuths;std::uint64_t animation_origins{},origin_count{},zero_origins{},center_count{},zero_centers{};};
 struct PackageSummary {
     std::string category;
     std::map<std::string,std::uint64_t> counts;
