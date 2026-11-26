@@ -45,3 +45,7 @@ WAV payloads contain signed little-endian PCM16 with original sample rate and ch
 ### Campaign extensions (0.8.0)
 
 See [campaign-v1.md](campaign-v1.md) for the ordered script representation and eight-layer tactical map payload. Map binary paths in map.json are relative to that record's directory. Existing original-container ownership is retained (e.g. COMMON.FS maps and scripts live in common.pak); moving them across packages without duplicating source bytes requires a later cross-package reference contract. Unknown script commands are preserved without interpretation. The runtime_ready field remains false.
+
+### Multimedia extensions (0.9.0)
+
+Music payload music.mid is Standard MIDI (validated original or XMIDI converted using upstream mode 0); original XMI is retained, including any unsupported Miles-specific semantics. Movie records reference movie.json, which points to movie.mkv in the same record directory. FFV1 RGB and FLAC PCM are lossless relative to decoded frames and samples; the exporter checks both via FFmpeg round-trip. Source FPS and frame count are recorded; Matroska timestamp quantization and original playback clock are not yet independently verified. Original palette-index video and proprietary stream bytes remain in the original container. Missing companion DP2 audio or failed verification prevents converted status.
