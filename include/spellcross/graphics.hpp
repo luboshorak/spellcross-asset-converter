@@ -27,6 +27,8 @@ struct Palette {
 Palette tactical_palette(const Inventory&);
 Palette asset_palette(const Inventory&,const Asset&,const Palette&);
 std::optional<Sprite> decode_image(const Asset&,std::span<const std::uint8_t>);
+// Diagnostic-only raw dimension candidates; never used to mark graphics decoded.
+std::string graphics_evidence(std::span<const std::uint8_t>);
 bool compressed(const Asset&);
 bool is_text_asset(const Asset&,std::span<const std::uint8_t>);
 std::string block_name(const Asset&);

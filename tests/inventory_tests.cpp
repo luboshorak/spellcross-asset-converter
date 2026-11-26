@@ -394,6 +394,27 @@ int main(){
         win.pop_back();bool truncated_icon=false;
         try{sc::decode_image(win_asset,win);}catch(const std::exception&){truncated_icon=true;}
         require(truncated_icon);
+        // Shared geometry across archives and edition-independent frame names.
+        for(auto archive:{"COMMON.FS","INSTALL.FS"})for(auto variant:{"RAM1","RAM2"}){
+            sc::Asset frame_asset;frame_asset.member=true;frame_asset.format="DTA";
+            for(auto [suffix,w,h]:std::vector<std::tuple<std::string,int,int>>{
+                    {"HORZ.DTA",76,10},{"VERT.DTA",10,69},{"ROH.DTA",10,10}}){
+                frame_asset.name=std::string(archive)+"::"+variant+suffix;
+                auto image=sc::decode_image(frame_asset,B(w*h,0));
+                require(image&&image->width==w&&image->height==h&&image->opaque[0]==0);
+                require(!sc::decode_image(frame_asset,B(w*h+3)));
+            }
+        }
+        sc::Asset pattern_asset;pattern_asset.member=true;pattern_asset.format="DTA";
+        pattern_asset.name="COMMON.FS::RAM1PAT.DTA";
+        require(!sc::decode_image(pattern_asset,B(6715)));
+        auto evidence=sc::graphics_evidence(B(281,0));
+        require(evidence.find("decoded_bytes=281")!=std::string::npos&&
+                evidence.find("40x7+1")!=std::string::npos&&
+                evidence.find("not verified")!=std::string::npos);
+        bool zero_height_rejected=false;
+        try{sc::decode_image(terrain,B(2248,0));}catch(const std::exception&){zero_height_rejected=true;}
+        require(zero_height_rejected);
         std::cout<<"Inventory, graphics, video, atlas, semantic, campaign, music and presentation tests passed\n";
     }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}
 }

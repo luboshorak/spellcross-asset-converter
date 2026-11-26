@@ -173,6 +173,15 @@ struct RawUi {int w,h;bool transparent;std::string palette;};
 static std::optional<RawUi> raw_ui(const Asset& a){
     auto n=upper_name(a);
     if(in_archive(a,"INFO.FS")&&a.format=="DTA"&&n=="PATTERN.DTA")return RawUi{32,32,false,"info"};
+    // The RAM1/RAM2 frame family shares the same geometry in the
+    // original COMMON.FS. Reuse it for installer copies only when the
+    // decoded byte count matches the actual known frame geometry.
+    if(a.format=="DTA"&&(in_archive(a,"COMMON.FS")||in_archive(a,"INSTALL.FS"))&&
+       n.size()>4&&n.starts_with("RAM")&&(n[3]=='1'||n[3]=='2')){
+        if(n.substr(4)=="HORZ.DTA")return RawUi{76,10,true,"frame"};
+        if(n.substr(4)=="ROH.DTA")return RawUi{10,10,true,"frame"};
+        if(n.substr(4)=="VERT.DTA")return RawUi{10,69,true,"frame"};
+    }
     if(a.member&&!block_name(a).empty()&&!in_archive(a,"COMMON.FS"))return std::nullopt;
     // Dimensions verified by reconstructing the English retail pixel arrays.
     if(n=="DIFFIC.LZ")return RawUi{249,152,true,"MAINMENU.PAL"};
@@ -307,6 +316,22 @@ Palette asset_palette(const Inventory& inv,const Asset& a,const Palette& tactica
     }
     const bool strategic_icon=icon&&(prefix("VM")||prefix("BIGMB")||prefix("BIGM2")||prefix("BMPAN")||n=="LASTTERT.ICO");
     if(ui&&ui->palette=="tactical")return tactical;
+    if(ui&&ui->palette=="frame"){
+        if(in_archive(a,"COMMON.FS"))return tactical;
+        // The installer palette is not the tactical palette. Only claim
+        // colors when the containing archive has one unambiguous full bank.
+        Palette p{};
+        for(unsigned i=0;i<256;++i)p.rgb[3*i]=p.rgb[3*i+1]=p.rgb[3*i+2]=i;
+        const Asset* only=nullptr;
+        for(auto& entry:inv.assets)if(block_name(entry)==block_name(a)&&
+           entry.backing==a.backing&&(entry.format=="PAL"||entry.format=="NRM")&&entry.size==768){
+            if(only)return p;
+            only=&entry;
+        }
+        if(only)try{auto bytes=preview(*only,768);std::copy(bytes.begin(),bytes.end(),p.rgb.begin());p.known.fill(true);}
+        catch(const std::exception&){}
+        return p;
+    }
     if(a.format=="CLK"){
         Palette p{};for(unsigned i=0;i<256;++i){p.rgb[i*3]=p.rgb[i*3+1]=p.rgb[i*3+2]=i;p.known[i]=true;}return p;
     }
@@ -346,6 +371,9 @@ static bool terrain_archive(const Asset& a){
 static Sprite terrain_sprite(std::span<const std::uint8_t> d){
     if(d.size()<8)throw std::runtime_error("Truncated terrain sprite");
     Sprite s;s.width=80;s.height=d[0];s.shadow_index=false;
+    // A zero-height terrain header with remaining nonzero data is corrupt,
+    // not an empty valid image. Never invent missing scanlines.
+    if(!s.height)throw std::runtime_error("Invalid zero-height terrain header; original retained");
     std::uint32_t origin=std::uint32_t(d[4])|std::uint32_t(d[5])<<8|std::uint32_t(d[6])<<16|std::uint32_t(d[7])<<24;
     s.y=static_cast<std::int32_t>(origin);
     s.indices.resize(std::size_t(s.width)*s.height);s.opaque.resize(s.indices.size());
@@ -442,6 +470,7 @@ std::optional<Sprite> decode_image(const Asset& a,std::span<const std::uint8_t> 
         s.width=ui->w;s.height=ui->h;opaque_zero=!ui->transparent;
         if(n=="MAINM_BG.LZ"&&d.size()>=255u*237&&d.size()<=255u*237+64)s.height=237;
         auto expected=std::size_t(s.width)*s.height;
+        if(ui->palette=="frame"&&d.size()!=expected)return std::nullopt;
         if(d.size()<expected||d.size()>expected+64)throw std::runtime_error("Unexpected known UI image size");
     }else if(in_archive(a,"INFO.FS")&&a.format=="LZ"){
         if(n=="IBG_768.LZ"){s.width=1024;s.height=768;opaque_zero=true;}
@@ -463,7 +492,7 @@ std::optional<Sprite> decode_image(const Asset& a,std::span<const std::uint8_t> 
         else if(n.starts_with("I_")&&a.format=="LZ")s.width=60;
         else if(n=="I_ATTACK"||n=="I_LOWER"||n=="I_MOVE"||n=="I_UPPER"||n=="I_SELECT"){s.width=20;s.height=20;opaque_zero=true;}
         else if(n=="I_TAB"){s.width=60;s.height=45;opaque_zero=true;}
-        else if(a.format=="DTA"&&in_archive(a,"COMMON.FS")&&n.starts_with("RAM"))s.width=n.ends_with("HORZ.DTA")?76:10;
+        // No arbitrary width for unknown RAM pattern textures.
         else return std::nullopt;
         if(!s.height){if(d.size()%s.width>2)throw std::runtime_error("Raw image length not divisible by known width (except retail padding)");s.height=static_cast<int>(d.size()/s.width);}
     }
@@ -473,6 +502,30 @@ std::optional<Sprite> decode_image(const Asset& a,std::span<const std::uint8_t> 
     for(std::size_t i=0;i<s.indices.size();++i)s.opaque[i]=(s.indices[i]||opaque_zero)?255:0;
     s.trailing_bytes=d.size()-start-s.indices.size();
     return s;
+}
+std::string graphics_evidence(std::span<const std::uint8_t> d){
+    std::ostringstream out;
+    out<<"decoded_bytes="<<d.size()<<"\n";
+    out<<"first_bytes=";
+    for(std::size_t i=0;i<std::min<std::size_t>(32,d.size());++i)
+        out<<std::hex<<std::setw(2)<<std::setfill('0')<<unsigned(d[i]);
+    out<<std::dec<<"\n";
+    // Raw 8-bit arrays carry no width. Enumerate exact possible geometry
+    // and up to two retail alignment bytes for diagnosis ONLY; never use
+    // this list as proof that an image is decoded.
+    out<<"candidate_indexed_dimensions (not verified):";
+    for(unsigned padding=0;padding<=2;++padding){
+        if(d.size()<=padding)continue;
+        auto pixels=d.size()-padding;
+        if(pixels>16000000)continue;
+        for(unsigned w=1;w<=4096;++w){
+            if(pixels%w||pixels/w>4096)continue;
+            out<<" "<<w<<"x"<<pixels/w;
+            if(padding)out<<"+"<<padding;
+        }
+    }
+    out<<"\n";
+    return out.str();
 }
 static std::string json_string(const std::string& s) {
     std::ostringstream o;o<<'"';

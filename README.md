@@ -115,3 +115,11 @@ The converter uses the Reloaded strategic UI palette, grid-painted panels and ow
 - Decode IBG_600, NAMELSTA, DIFFIC, GOTOLSTA, LED_OFF/ON and PATTERN using dimensions reconstructed from the English retail assets. Palette contexts and Czech visual parity are not yet verified.
 - Decode the loose SPELCROS.ICO as a Windows single-entry indexed 8-bit DIB with its own RGB palette and AND transparency mask, separately from the native game ICO scanlines.
 - Czech ISO-only assets (including MUSIC.FS and INSTALL.FS), ambiguous raw dimensions, INFOLSTA edition differences and DEVAST DMA0_270 remain open. No speculative classification or fabricated pixels.
+
+## 0.9.9 — batch graphics evidence and shared resource families
+
+- Use shared RAM1/RAM2 frame geometry across COMMON.FS and INSTALL.FS, strictly checking decoded byte lengths. The pattern texture remains unknown until its width is established. Preserve existing transparency conventions.
+- Recognize validated MIDI/XMIDI content during the graphics audit regardless of extension; archive or filename alone is not evidence that a resource is music.
+- Reject zero-height terrain headers explicitly; DMA0_270.DTA in the supplied English installation has 186 leading zero bytes and cannot be faithfully reconstructed from neighboring tiles. Original bytes remain preserved.
+- After a completed graphics audit, optionally export one `graphics-audit.zip` for all unresolved records. It contains the coverage report, source names and status, original/decoded payloads (up to 64 MiB per record), relevant palette banks, decoded lengths, and candidate indexed dimensions. Candidate dimensions are diagnostic hypotheses, not successful image conversions. No full ISO is needed for subsequent analysis of these gaps.
+- This is not a visual-parity test and does not claim complete Czech CD coverage. Remaining optional installer/media artwork and raw layouts must be verified against actual bytes before conversion.
