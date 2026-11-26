@@ -879,6 +879,7 @@ class Frame final : public wxFrame {
         const int choice=block_choice->GetSelection();
         const bool partial=choice>0;
         auto ffmpeg=ffmpeg_picker->GetPath();
+        if(ffmpeg.empty()){ffmpeg=default_ffmpeg();if(!ffmpeg.empty())ffmpeg_picker->SetPath(ffmpeg);}
         if(!ffmpeg.empty()){wxFileName executable(ffmpeg);executable.MakeAbsolute();ffmpeg=executable.GetFullPath();}
         std::map<std::string,std::vector<std::size_t>> packages;
         std::map<std::string,std::size_t> occurrences;
@@ -1510,7 +1511,7 @@ public:
         label(conversion,s,"Modern game data (.pak)",true);
         label(conversion,s,"Choose all game data or one source archive.\nCreate logical PAK packages with shared indexed atlases, palettes and manifests.\nUnconverted assets and original containers are preserved.");
         block_choice=new wxChoice(conversion,wxID_ANY);block_choice->Append("All game data");block_choice->SetSelection(0);paint(block_choice,false);s->Add(block_choice,0,wxEXPAND|wxALL,10);
-        label(conversion,s,"FFmpeg executable (optional, required for lossless video export)");
+        label(conversion,s,"FFmpeg (automatically detected; override only if needed)");
         ffmpeg_picker=new wxFilePickerCtrl(conversion,wxID_ANY,default_ffmpeg(),"Select FFmpeg executable",wxFileSelectorDefaultWildcardStr,wxDefaultPosition,wxDefaultSize,wxFLP_OPEN|wxFLP_USE_TEXTCTRL);
         s->Add(ffmpeg_picker,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,10);
         modern_button=button(conversion,s,modern_id,"Convert to modern PAK");modern_button->Enable(false);
