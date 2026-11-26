@@ -164,8 +164,12 @@ static void unit_metadata(PackageSummary& out,const AuditRecord& row,const J& m)
         for(std::size_t p=0;p<hex.size();p+=2)original.push_back(static_cast<std::uint8_t>(digit(hex[p])*16+digit(hex[p+1])));
         auto field=[&](const char* key){return "unit["+id+"]."+key;};
         auto link=[&](const char* key,const char* kind,const char* scope){game_ref(out,row,field(key),kind,unit.at(key).str(),scope);};
-        for(auto key:{"graphics","aux_graphics","light_animation","armor_animation","air_animation","action_animation","die_animation"})
-            link(key,"atlas-group","UNITS.FSU");
+        link("graphics","atlas-group","UNITS.FSU");link("aux_graphics","atlas-group","UNITS.FSU");
+        for(auto pair:{std::pair{"light_animation","light_frames"},std::pair{"armor_animation","armor_frames"},
+                      std::pair{"air_animation","air_frames"},std::pair{"action_animation","action_frames"},std::pair{"die_animation","die_frames"}}){
+            link(pair.first,"atlas-group","UNITS.FSU");
+            out.game_references.back().frame_limit=unit.at(pair.second).num();
+        }
         for(auto key:{"light_hit","light_shot","armor_hit","armor_shot","air_hit","air_shot"})link(key,"pnm","COMMON.FS");
         link("icon","graphic","COMMON.FS");link("projectile","graphic","COMMON.FS");link("info","info-graphic","INFO.FS");
         for(auto pair:{std::pair{"sound_move","M_SOUNDS.DEF"},std::pair{"sound_light","A_SOUNDS.DEF"},
@@ -457,7 +461,16 @@ PackageSummary validate_package(const Entries& entries,std::string_view expected
             auto w=m.at("width").num(),h=m.at("height").num();if(!w||!h||w>1000000||h>1000000/w)fail("Invalid map dimensions");
             for(auto layer:{"ground","objects"}){
                 auto loc=relative(p,m.at(layer).at("entry").str());
-                size_is(entry(entries,loc),w*h*2);derived.insert(loc);
+                const auto& plane=entry(entries,loc);size_is(plane,w*h*2);derived.insert(loc);
+                if(plane.tile_bytes.size()!=plane.size)fail("Missing map tile bytes for validation");
+                auto count=m.at(layer).at("sprites").arr().size();
+                bool ground=std::string_view(layer)=="ground";
+                if((ground&&(!count||count>4095))||(!ground&&count>255))fail("Invalid map sprite table length");
+                for(std::size_t i=0;i<plane.tile_bytes.size();i+=2){
+                    unsigned index=plane.tile_bytes[i];
+                    if(ground)index=(index|(unsigned(plane.tile_bytes[i+1])<<8))&4095;
+                    if(ground?index>=count:index>count)fail("Map tile references missing local sprite: "+id);
+                }
             }
             map_metadata(out,row,m);
             row.kind="tactical-map";row.notes="Eight layer metadata; see game reference audit for cross-resource links";
