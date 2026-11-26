@@ -85,6 +85,62 @@ int main(){
         require(units.fsu_archives==1&&units.fsu_resources==1&&units.fsu_sprites==1&&units.assets.size()==2);
         auto spr=std::find_if(units.assets.begin(),units.assets.end(),[](auto& a){return a.format=="FSU-SPRITE";});
         require(spr!=units.assets.end()&&spr->name=="UNITS.FSU::TEST/000"&&sc::decode_asset(*spr)==sprite);
+        // Original DOS installer layout: directory block (including count),
+        // then 25-byte file entries and raw payloads. Include both FS/FSU
+        // plus a nested directory and an ISO-side file outside INSTALL.DTA.
+        std::string dirs("DATA\0SOUND\\VOICE\0",17);
+        const std::size_t count_pos=8+dirs.size()+3; // padding in directory block
+        const std::size_t records=count_pos+4,end=records+3*25;
+        B install(end+fsdata.size()+fsu.size()+3);
+        le(install,0,static_cast<std::uint32_t>(count_pos-4));le(install,4,2);str(install,8,dirs);
+        le(install,count_pos,3);
+        auto install_record=[&](unsigned i,const std::string& name,unsigned offset,unsigned len,unsigned dir){
+            auto pos=records+25*i;str(install,pos,name);le(install,pos+13,offset);le(install,pos+17,len);le(install,pos+21,dir);
+        };
+        install_record(0,"COMMON.FS",end,fsdata.size(),0);
+        install_record(1,"UNITS.FSU",end+fsdata.size(),fsu.size(),0);
+        install_record(2,"VOICE.WAV",end+fsdata.size()+fsu.size(),3,1);
+        std::copy(fsdata.begin(),fsdata.end(),install.begin()+end);
+        std::copy(fsu.begin(),fsu.end(),install.begin()+end+fsdata.size());
+        str(install,end+fsdata.size()+fsu.size(),"wav");
+        auto installed_dir=t.p/"installer";require(fs::create_directory(installed_dir));write(installed_dir/"INSTALL.DTA",install);
+        auto verify_install=[&](const sc::Inventory& result,std::uint64_t base){
+            require(result.warnings.empty()&&result.install_archives==1&&result.install_files==3&&result.fs_archives==1&&result.fsu_archives==1&&result.fsu_sprites==1);
+            auto find=[&](std::string_view suffix)->const sc::Asset&{
+                auto it=std::find_if(result.assets.begin(),result.assets.end(),[&](const auto& a){return a.name.ends_with(suffix);});
+                require(it!=result.assets.end());return *it;
+            };
+            auto& common=find("INSTALL.DTA::DATA/COMMON.FS");
+            auto& hello=find("COMMON.FS::HELLO.TXT");
+            auto& unit=find("UNITS.FSU::TEST/000");
+            auto& voice=find("SOUND/VOICE/VOICE.WAV");
+            require(common.indexed_container&&!sc::can_expand(common,{}));
+            require(hello.offset==base+end+46&&sc::preview(hello)==B({'a','b','c'}));
+            require(sc::block_name(hello)==common.name&&sc::pack::category(hello)=="common"&&sc::pack::category(common)=="common");
+            require(sc::decode_asset(unit)==sprite&&sc::pack::category(unit)=="units");
+            require(sc::block_name(voice).empty()&&sc::pack::category(voice)=="audio"&&sc::preview(voice)==B({'w','a','v'}));
+        };
+        auto installer=sc::scan(installed_dir/"INSTALL.DTA");require(installer.assets.size()==7);verify_install(installer,0);
+        verify_install(sc::scan(installed_dir),0);
+        // Re-use the minimal ISO fixture, replacing its directory entries.
+        std::fill(iso.begin()+20*2048,iso.end(),0);
+        auto install_dir=20*2048;
+        install_dir+=record(install_dir,20,2048,2,std::string(1,'\0'));
+        install_dir+=record(install_dir,20,2048,2,std::string(1,'\1'));
+        install_dir+=record(install_dir,21,install.size(),0,"INSTALL.DTA;1");
+        record(install_dir,22,3,0,"CDSIDE.TXT;1");
+        require(install.size()<2048);
+        std::copy(install.begin(),install.end(),iso.begin()+21*2048);str(iso,22*2048,"cd!");
+        write(t.p/"installer.iso",iso);auto disc=sc::scan(t.p/"installer.iso");require(disc.assets.size()==8);verify_install(disc,21*2048);
+        auto cdside=std::find_if(disc.assets.begin(),disc.assets.end(),[](auto& a){return a.name=="CDSIDE.TXT";});
+        require(cdside!=disc.assets.end()&&sc::preview(*cdside)==B({'c','d','!'}));
+        // Malformed installer tables must never index partial or out-of-range data.
+        auto malformed=[&](B data){write(installed_dir/"INSTALL.DTA",data);auto bad=sc::scan(installed_dir/"INSTALL.DTA");require(bad.assets.size()==1&&bad.warnings.size()==1&&bad.install_archives==0);};
+        auto bad_install=install;le(bad_install,records+13,1);malformed(bad_install);
+        bad_install=install;le(bad_install,records+21,99);malformed(bad_install);
+        bad_install=install;le(bad_install,records+13,0xffffffffu);malformed(bad_install);
+        bad_install=install;le(bad_install,0,4);malformed(bad_install);
+        bad_install=install;str(bad_install,8,"../X");malformed(bad_install);
         le(fsu,22,0xffffffff);write(t.p/"BROKEN.FSU",fsu);
         auto broken=sc::scan(t.p/"BROKEN.FSU");require(broken.warnings.size()==1&&broken.assets.size()==1);
         auto group=sc::sprite_group_members(units,*spr);
