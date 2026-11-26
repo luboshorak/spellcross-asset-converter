@@ -178,9 +178,9 @@ static std::optional<RawUi> raw_ui(const Asset& a){
     // decoded byte count matches the actual known frame geometry.
     if(a.format=="DTA"&&(in_archive(a,"COMMON.FS")||in_archive(a,"INSTALL.FS"))&&
        n.size()>4&&n.starts_with("RAM")&&(n[3]=='1'||n[3]=='2')){
-        if(n.substr(4)=="HORZ.DTA")return RawUi{76,10,false,"frame"};
-        if(n.substr(4)=="ROH.DTA")return RawUi{10,10,false,"frame"};
-        if(n.substr(4)=="VERT.DTA")return RawUi{10,69,false,"frame"};
+        if(n.substr(4)=="HORZ.DTA")return RawUi{76,10,true,"frame"};
+        if(n.substr(4)=="ROH.DTA")return RawUi{10,10,true,"frame"};
+        if(n.substr(4)=="VERT.DTA")return RawUi{10,69,true,"frame"};
     }
     if(a.member&&!block_name(a).empty()&&!in_archive(a,"COMMON.FS"))return std::nullopt;
     // Dimensions verified by reconstructing the English retail pixel arrays.
