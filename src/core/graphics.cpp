@@ -4,6 +4,9 @@
 #include <algorithm>
 #include <stdexcept>
 #include <limits>
+#include <sstream>
+#include <iomanip>
+#include <string_view>
 namespace sc {
 Bytes decode_lz(std::span<const std::uint8_t> data,std::size_t max_output) {
     if(data.size()<3)throw std::runtime_error("Truncated LZ header");
@@ -104,5 +107,47 @@ Palette tactical_palette(const Inventory& inv) {
     bank("::UNITS.PAL",128,96);
     bank("::SYSTEM.PAL",224,32);
     return p;
+}
+static std::string json_string(const std::string& s) {
+    std::ostringstream o;o<<'"';
+    for(unsigned char ch:s) {
+        if(ch=='"'||ch=='\\')o<<'\\'<<char(ch);
+        else if(ch<32||ch>=127)o<<"\\u00"<<std::hex<<std::setw(2)<<std::setfill('0')<<unsigned(ch)<<std::dec;
+        else o<<char(ch);
+    }
+    o<<'"';return o.str();
+}
+std::string sprite_metadata(const Asset& a,const Sprite& s,const Palette& p) {
+    std::ostringstream o;
+    o<<"{\n  \"schema\": \"spellcross-sprite-v1\",\n  \"source_name\": "<<json_string(a.name)
+     <<",\n  \"source_name_encoding\": \"byte-preserving JSON escapes\",\n  \"source_offset\": "<<a.offset<<",\n  \"stored_size\": "<<a.size
+     <<",\n  \"width\": "<<s.width<<",\n  \"height\": "<<s.height
+     <<",\n  \"x_offset\": "<<s.x<<",\n  \"y_offset\": "<<s.y
+     <<",\n  \"trailing_bytes\": "<<s.trailing_bytes
+     <<",\n  \"shadow_index\": 253,\n  \"preview_shadow_alpha\": 128,"
+     <<"\n  \"images\": {\"preview\":\"preview.png\",\"indices\":\"indices.png\",\"opacity\":\"opacity.png\"},"
+     <<"\n  \"stored_bytes\": \"original.bin\",\n  \"palette_rgb\": [";
+    for(std::size_t i=0;i<p.rgb.size();++i){if(i)o<<',';o<<unsigned(p.rgb[i]);}
+    o<<"],\n  \"palette_known\": [";
+    for(std::size_t i=0;i<p.known.size();++i){if(i)o<<',';o<<(p.known[i]?"true":"false");}
+    o<<"]\n}\n";return o.str();
+}
+std::string sprite_group(const Asset& a) {
+    if(a.format!="FSU-SPRITE")return {};
+    auto slash=a.name.find_last_of('/');
+    return slash==std::string::npos?std::string{}:a.name.substr(0,slash);
+}
+std::vector<std::size_t> sprite_group_members(const Inventory& inv,const Asset& a) {
+    std::vector<std::size_t> result;
+    const auto group=sprite_group(a);
+    if(group.empty())return result;
+    for(std::size_t i=0;i<inv.assets.size();++i)
+        if(sprite_group(inv.assets[i])==group && inv.assets[i].backing==a.backing)
+            result.push_back(i);
+    // FSU records are catalogued by logical name; preserve original sprite
+    // table order using a stable sort only when names match (inventory order).
+    // For playback this is explicitly a name-ordered contact sequence, not
+    // inferred azimuth/animation semantics.
+    return result;
 }
 }

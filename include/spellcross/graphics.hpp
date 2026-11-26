@@ -22,4 +22,9 @@ struct Palette {
 // Default tactical palette (first MAP.PAL bank in catalogue, then units/system).
 // Unknown entries remain explicitly marked and shown as grayscale.
 Palette tactical_palette(const Inventory&);
+// Sidecar metadata for lossless sprite reconstruction. The index and mask
+// images store original values independently of the presentation palette.
+std::string sprite_metadata(const Asset&, const Sprite&, const Palette&);
+std::string sprite_group(const Asset&);
+std::vector<std::size_t> sprite_group_members(const Inventory&,const Asset&);
 }
