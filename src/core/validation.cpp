@@ -280,17 +280,31 @@ static std::string audit_cell(std::string_view value){
     if(!out.empty()&&(out.front()=='='||out.front()=='+'||out.front()=='-'||out.front()=='@'))out.insert(out.begin(),'\'');
     return out;
 }
-AuditReport audit_report(std::string_view root,const std::map<std::string,PackageSummary>& packages){
+// pack::json encodes every original non-ASCII byte as U+00xx.
+static std::string source_name_utf8(std::string_view bytes){
+    std::string result;
+    for(unsigned char c:bytes){
+        if(c<128)result+=char(c);
+        else{result+=char(0xc0|(c>>6));result+=char(0x80|(c&63));}
+    }
+    return result;
+}
+AuditReport audit_report(std::string_view root,const std::map<std::string,PackageSummary>& packages,
+                         const std::vector<SourceRecord>* expected_source){
     validate_dataset(root,packages);
     auto j=parse(root);
+    std::map<std::string,const SourceRecord*> expected;
+    if(expected_source)for(const auto& item:*expected_source)
+        if(!expected.emplace(source_name_utf8(item.id),&item).second)fail("Duplicate source inventory ID");
+    std::set<std::string> seen_ids;
     std::ostringstream report,rows;
     report<<"PAK EXPORT AUDIT\n\n"
         <<"Structural validation: passed\n"
-        <<"Dataset: "<<(j.at("partial").boolean()?"PARTIAL":"full selection (source completeness not independently verified)")<<"\n"
+        <<"Dataset: "<<(j.at("partial").boolean()?"PARTIAL":"full selection")<<"\n"
         <<"Manifest runtime_ready: "<<(j.at("runtime_ready").boolean()?"true":"false")<<" (declared, not certified)\n";
     if(auto language=j.get("edition_language"))report<<"Edition: "<<language->str()<<"\n";
     if(auto warnings=j.get("scan_warnings"))report<<"Source scan warnings: "<<warnings->arr().size()<<"\n";
-    report<<"\n";
+    report<<"Source inventory match: "<<(expected_source?"checked against selected scan":"not independently checked")<<"\n\n";
     rows<<"package\tcategory\tid\tname\tformat\tstatus\tpayload_kind\tassessment\tsource_bytes\tprimary_payload_bytes\tpayload\tdetail\tnotes\n";
     std::map<std::string,std::uint64_t> totals,kinds,assessments,unresolved;
     std::uint64_t original=0,derived=0,metadata=0,unattributed=0,archive=0,records=0,zip_entries=0,frames=0;
@@ -304,6 +318,16 @@ AuditReport audit_report(std::string_view root,const std::map<std::string,Packag
         unattributed+=p.unattributed_bytes;archive+=p.archive_bytes;
         for(const auto& [status,n]:p.counts)totals[status]+=n;
         for(const auto& row:p.audit_records){
+            if(!seen_ids.insert(row.id).second)fail("Duplicate record ID across PAK packages: "+row.id);
+            if(expected_source){
+                auto it=expected.find(row.id);
+                if(it==expected.end())fail("Unexpected PAK record: "+row.id);
+                const auto& item=*it->second;
+                if(source_name_utf8(item.name)!=row.name||item.format!=row.format||
+                   item.category!=p.category||item.size!=row.source_bytes)
+                    fail("PAK source inventory mismatch: "+row.id);
+                expected.erase(it);
+            }
             ++kinds[row.kind];++assessments[row.assessment];
             if(row.assessment=="legacy-required"||row.assessment=="semantic-review")
                 ++unresolved[p.category+"/"+row.format+"/"+row.assessment];
@@ -313,6 +337,7 @@ AuditReport audit_report(std::string_view root,const std::map<std::string,Packag
                 <<row.payload_bytes<<'\t'<<audit_cell(row.payload)<<'\t'<<audit_cell(row.detail)<<'\t'<<audit_cell(row.notes)<<'\n';
         }
     }
+    if(!expected.empty())fail("Missing PAK record from source inventory: "+expected.begin()->first);
     report<<"\nTOTAL: "<<records<<" records, "<<zip_entries<<" ZIP entries, "<<frames<<" atlas frames\n";
     for(const auto& status:statuses)report<<status<<": "<<count(totals,status)<<"\n";
     report<<"\nASSESSMENT (not runtime certification)\n";
