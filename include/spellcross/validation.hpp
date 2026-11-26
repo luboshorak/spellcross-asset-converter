@@ -21,6 +21,16 @@ struct AuditRecord {
     std::uint64_t original_offset{},atlas_frames{};
 };
 struct AtlasGroup {std::string group,entry;std::uint64_t frames{};bool fsu_layout{};};
+// A reference points to an asset, atlas group, or numeric ID in a
+// particular definition table. Source locations are stable record IDs
+// plus a field/line selector; unknown syntax is reported separately.
+struct GameReference {
+    std::string source,field,kind,target,scope;
+};
+struct DefinitionSet {
+    std::string source,kind;
+    std::vector<std::string> ids;
+};
 struct PackageSummary {
     std::string category;
     std::map<std::string,std::uint64_t> counts;
@@ -30,13 +40,17 @@ struct PackageSummary {
     std::uint64_t zip_entries{},archive_bytes{};
     std::vector<AuditRecord> audit_records;
     std::vector<AtlasGroup> atlas_groups;
+    std::vector<GameReference> game_references;
+    std::vector<DefinitionSet> definitions;
+    std::map<std::string,std::uint64_t> metadata_coverage;
+    std::map<std::string,std::uint64_t> unreviewed_commands;
 };
 struct DatasetPackage {std::string file,category;};
 bool safe_entry(std::string_view);
 std::vector<DatasetPackage> dataset_packages(std::string_view);
 PackageSummary validate_package(const Entries&,std::string_view expected_category);
 void validate_dataset(std::string_view,const std::map<std::string,PackageSummary>&);
-struct AuditReport {std::string summary,records_tsv,catalog_json;};
+struct AuditReport {std::string summary,records_tsv,catalog_json,game_metadata_json,references_tsv;};
 // Optional v1 extension: deterministic dataset-wide lookup index derived
 // exclusively from validated package manifests.
 bool has_resource_catalog(std::string_view root);
