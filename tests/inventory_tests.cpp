@@ -2,6 +2,7 @@
 #include "spellcross/graphics.hpp"
 #include "spellcross/video.hpp"
 #include "spellcross/pack.hpp"
+#include "spellcross/semantic.hpp"
 #include <algorithm>
 #include <chrono>
 #include <fstream>
@@ -151,6 +152,16 @@ int main(){
         require(sc::pack::category(terrain)=="terrain"&&sc::pack::category(*spr)=="units");
         require(sc::pack::stable_id(*spr,1)!=sc::pack::stable_id(*spr,2));
         require(sc::pack::json("a\"b\n")=="\"a\\\"b\\u000a\"");
-        std::cout<<"Inventory, graphics, video and atlas tests passed\n";
+        sc::Asset sound;sound.name="SAMPLES.FS::8TEST";sound.member=true;
+        auto sample=sc::decode_sample(sound,B{0,128,255});
+        require(sample&&sample->samples==std::vector<std::int16_t>({-32768,0,32512})&&sample->rate==11025);
+        auto round=sc::decode_sample(sound,sc::pcm_wave(sample->samples,sample->rate,sample->channels));require(round&&round->samples==sample->samples);
+        sound.name="SAMPLES.FS::MTEST";auto stereo=sc::decode_sample(sound,B{0,0,255,255,0,128,1,128});
+        require(stereo&&stereo->channels==2&&stereo->samples==std::vector<std::int16_t>({-32768,32767,0,1}));
+        sc::Asset defs;defs.name="COMMON.FS::JEDNOTKY.DEF";B units_data(207);units_data[0]='A';units_data[0x47]=1;units_data[0x48]=2;units_data[0x49]=7;units_data[0xa3]=13;
+        auto units_json=sc::unit_definitions(defs,units_data);require(units_json&&units_json->find("\"fire_flags\":513")!=std::string::npos&&units_json->find("\"shot_ap\":7")!=std::string::npos&&units_json->find("\"action_id\":13")!=std::string::npos);
+        sc::Asset font;font.name="COMMON.FS::FONT_001.FNT";auto glyphs=sc::decode_font(font,B{1,9,1,0x80,0x80});
+        require(glyphs&&glyphs->glyphs.size()==33&&glyphs->glyphs[32].indices[0]==1&&glyphs->glyphs[32].indices[8]==1&&glyphs->glyphs[32].indices[1]==0);
+        std::cout<<"Inventory, graphics, video, atlas and semantic tests passed\n";
     }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}
 }
