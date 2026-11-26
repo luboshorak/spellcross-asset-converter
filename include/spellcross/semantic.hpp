@@ -4,6 +4,7 @@ namespace sc {
 struct Pcm { int rate{},channels{}; std::vector<std::int16_t> samples; };
 std::optional<Pcm> decode_sample(const Asset&,std::span<const std::uint8_t>);
 std::optional<std::string> unit_definitions(const Asset&,std::span<const std::uint8_t>);
+std::optional<std::string> fsu_context(const Asset&,std::span<const std::uint8_t>);
 // Known small retail tables, retaining all original values and unknown tails.
 struct RetailTable {std::string kind,json;};
 std::optional<RetailTable> retail_table(const Asset&,std::span<const std::uint8_t>);
