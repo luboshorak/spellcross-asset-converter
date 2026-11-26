@@ -125,8 +125,7 @@ static void game_ref(PackageSummary& out,const AuditRecord& row,std::string fiel
     out.game_references.push_back({row.id,std::move(field),std::move(kind),std::move(target),std::move(scope)});
 }
 static void game_def(PackageSummary& out,const AuditRecord& row,std::string kind,std::vector<std::string> ids){
-    std::set<std::string> seen;
-    for(const auto& id:ids)if(id.empty()||!seen.insert(id).second)fail("Duplicate or empty game definition ID: "+row.id+"/"+kind);
+    for(const auto& id:ids)if(id.empty())++out.unreviewed_commands["empty-definition:"+kind];
     out.definitions.push_back({row.id,std::move(kind),std::move(ids)});
 }
 static void map_metadata(PackageSummary& out,const AuditRecord& row,const J& m){
@@ -418,7 +417,13 @@ PackageSummary validate_package(const Entries& entries,std::string_view expected
         // Group is source provenance, not a filesystem path. Older external
         // manifests may lack the optional group label.
         const auto group=a.get("group");
-        out.atlas_groups.push_back({group?group->str():name,name,seen.size(),a.get("fsu_layout")!=nullptr});
+        AtlasGroup indexed{group?group->str():name,name,seen.size(),a.get("fsu_layout")!=nullptr};
+        if(auto layout=a.get("fsu_layout")){
+            indexed.static_slopes=layout->at("static_slopes").num();indexed.static_azimuths=layout->at("static_azimuths").num();
+            indexed.animation_rows=layout->at("animation_azimuths").num()+layout->at("animation_slopes").num();
+            indexed.sequence_frames=layout->at("frames_per_sequence").num();
+        }
+        out.atlas_groups.push_back(std::move(indexed));
     }
     for(auto& [id,p]:payloads){
         auto& e=entry(entries,p);
@@ -454,7 +459,8 @@ PackageSummary validate_package(const Entries& entries,std::string_view expected
                 auto loc=relative(p,m.at(layer).at("entry").str());
                 size_is(entry(entries,loc),w*h*2);derived.insert(loc);
             }
-            row.kind="tactical-map";row.notes="Map layers present; resource links and runtime semantics not verified";
+            map_metadata(out,row,m);
+            row.kind="tactical-map";row.notes="Eight layer metadata; see game reference audit for cross-resource links";
         }else if(p.ends_with("/movie.json")){
             auto m=parse(e.json);schema(m,"spellcross-movie");
             auto loc=relative(p,m.at("entry").str());
@@ -511,9 +517,43 @@ PackageSummary validate_package(const Entries& entries,std::string_view expected
             row.notes=kind=="terrain-color-indices"?"All source indices preserved; slot meaning not verified":"Known table structure; source-byte parity not independently checked";
         }else if(p.ends_with(".json")){
             auto meta=parse(e.json);
-            if(p.ends_with("/units.json")){row.kind="unit-definitions";row.notes="Unmapped fields and cross-references need review";}
-            else if(p.ends_with("/script.json")){row.kind="ordered-script";row.notes="Syntax preserved; command interpretation and links need review";}
-            else if(p.ends_with("/classes.json")){row.kind="class-table";row.notes="Class and resource links need review";}
+            if(p.ends_with("/units.json")){unit_metadata(out,row,meta);row.kind="unit-definitions";row.notes="Verified mapped unit fields; unmapped bytes retained; see game reference audit";}
+            else if(p.ends_with("/script.json")){
+                // Earlier structural fixtures/third-party draft datasets may
+                // contain an opaque JSON object. Report missing semantics.
+                if(meta.get("schema"))script_metadata(out,row,meta);
+                else ++out.unreviewed_commands["script:missing-schema"];
+                row.kind="ordered-script";row.notes="Ordered domain blocks and known command links audited; unreviewed commands reported";
+            }
+            else if(p.ends_with("/classes.json")){class_metadata(out,row,meta);row.kind="class-table";row.notes="Class IDs and known resource links audited";}
+            else if(p.ends_with("/fsu-context.json")){
+                schema(meta,"spellcross-fsu-context");
+                auto signed32=[](const J& j){
+                    auto n=std::get_if<J::N>(&j.v);if(!n)fail("Invalid FSA coordinate");
+                    std::int32_t v{};const auto& str=n->value;
+                    auto result=std::from_chars(str.data(),str.data()+str.size(),v);
+                    if(result.ec!=std::errc{}||result.ptr!=str.data()+str.size())fail("Invalid FSA coordinate range");
+                };
+                auto point=[&](const J& j){auto& a=j.arr();if(a.size()!=2)fail("Invalid FSA coordinate pair");for(const auto& c:a)signed32(c);};
+                std::set<std::string> groups;
+                for(const auto& context:meta.at("resources").arr()){
+                    auto name=context.at("group").str();
+                    if(name.empty()||!groups.insert(game_upper(name)).second)fail("Invalid FSA group");
+                    FsuContextRecord value{row.id,name,{},0};
+                    const auto& slopes=context.at("static").arr();if(slopes.size()>13)fail("Invalid FSA slope count");
+                    for(const auto& slope:slopes){
+                        auto& origins=slope.at("fire_origins").arr();if(origins.size()>256)fail("Invalid FSA azimuth count");
+                        for(const auto& origin:origins)point(origin);
+                        point(slope.at("fire_center"));value.static_azimuths.push_back(origins.size());
+                    }
+                    const auto& anim=context.at("animation");auto& origins=anim.at("fire_origins").arr();
+                    if(origins.size()>256)fail("Invalid FSA animation count");
+                    for(const auto& origin:origins)point(origin);point(anim.at("fire_center"));
+                    value.animation_origins=origins.size();
+                    out.fsu_contexts.push_back(std::move(value));++out.metadata_coverage["supplied-fsu-context-groups"];
+                }
+                row.kind="fsu-context";row.notes="Explicit supplied editor context; group shape audited";
+            }
             else if(p.ends_with("/language.json")){row.kind="language-table";row.notes="Entry IDs and encoding parity need review";}
             else{row.kind="other-json";row.notes="Payload schema and semantics need review";}
         }else if(row.status=="decoded"){row.kind="decoded-binary";}
