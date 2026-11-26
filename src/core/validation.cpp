@@ -109,6 +109,208 @@ std::vector<DatasetPackage> dataset_packages(std::string_view text){
     }
     if(result.empty()||result.size()>100)fail("Invalid dataset package count");return result;
 }
+
+static std::string game_upper(std::string s){
+    for(auto& c:s)if(c>='a'&&c<='z')c=char(c-'a'+'A');return s;
+}
+static std::string game_leaf(std::string_view s){
+    auto p=s.find_last_of("/\\:");return game_upper(std::string(p==s.npos?s:s.substr(p+1)));
+}
+static std::string game_stem(std::string s){auto p=s.find_last_of('.');if(p!=s.npos)s.resize(p);return s;}
+static std::string game_id(std::string s){
+    std::uint64_t id{};auto r=std::from_chars(s.data(),s.data()+s.size(),id);
+    return r.ec==std::errc{}&&r.ptr==s.data()+s.size()?std::to_string(id):s;
+}
+static void game_ref(PackageSummary& out,const AuditRecord& row,std::string field,std::string kind,std::string target,std::string scope={}){
+    out.game_references.push_back({row.id,std::move(field),std::move(kind),std::move(target),std::move(scope)});
+}
+static void game_def(PackageSummary& out,const AuditRecord& row,std::string kind,std::vector<std::string> ids){
+    std::set<std::string> seen;
+    for(const auto& id:ids)if(id.empty()||!seen.insert(id).second)fail("Duplicate or empty game definition ID: "+row.id+"/"+kind);
+    out.definitions.push_back({row.id,std::move(kind),std::move(ids)});
+}
+static void map_metadata(PackageSummary& out,const AuditRecord& row,const J& m){
+    const auto terrain=game_upper(m.at("terrain").str())+".FS";
+    if(terrain!="T11.FS"&&terrain!="PUST.FS"&&terrain!="DEVAST.FS")fail("Unknown tactical terrain");
+    ++out.metadata_coverage["tactical-maps"];
+    auto add=[&](const char* layer,const char* key,const char* kind,const std::string& scope){
+        const auto& names=m.at(layer).at(key).arr();
+        for(std::size_t i=0;i<names.size();++i)
+            game_ref(out,row,std::string(layer)+"."+key+"["+std::to_string(i)+"]",kind,names[i].str(),scope);
+        return names.size();
+    };
+    add("ground","sprites","terrain-sprite",terrain);
+    add("objects","sprites","terrain-sprite",terrain);
+    for(const auto* layer:{"anm","pnm","loop_sounds","random_sounds"}){
+        bool sound=std::string_view(layer).ends_with("sounds");
+        auto n=add(layer,"resources",sound?"sample":layer,sound?"SAMPLES.FS":terrain);
+        for(const auto& pos:m.at(layer).at("placements").arr())
+            if(pos.at("resource").num()>=n)fail("Map placement references missing local resource");
+    }
+}
+static void unit_metadata(PackageSummary& out,const AuditRecord& row,const J& m){
+    schema(m,"spellcross-units");
+    const auto stride=m.at("record_size").num();
+    const auto& units=m.at("units").arr();
+    if((stride!=206&&stride!=207)||units.size()>10000||units.size()*stride!=row.source_bytes)fail("Invalid unit metadata record count");
+    sc::Bytes original;
+    std::vector<std::string> ids;
+    for(const auto& unit:units){
+        const auto id=std::to_string(unit.at("id").num());
+        if(id!=std::to_string(ids.size()))fail("Non-contiguous unit type IDs");
+        ids.push_back(id);
+        const auto& hex=unit.at("original_hex").str();
+        if(hex.size()!=stride*2)fail("Unit original record length mismatch");
+        auto digit=[](char c)->unsigned{if(c>='0'&&c<='9')return c-'0';if(c>='a'&&c<='f')return c-'a'+10;fail("Invalid unit record hex");};
+        for(std::size_t p=0;p<hex.size();p+=2)original.push_back(static_cast<std::uint8_t>(digit(hex[p])*16+digit(hex[p+1])));
+        auto field=[&](const char* key){return "unit["+id+"]."+key;};
+        auto link=[&](const char* key,const char* kind,const char* scope){game_ref(out,row,field(key),kind,unit.at(key).str(),scope);};
+        for(auto key:{"graphics","aux_graphics","light_animation","armor_animation","air_animation","action_animation","die_animation"})
+            link(key,"atlas-group","UNITS.FSU");
+        for(auto key:{"light_hit","light_shot","armor_hit","armor_shot","air_hit","air_shot"})link(key,"pnm","COMMON.FS");
+        link("icon","graphic","COMMON.FS");link("projectile","graphic","COMMON.FS");link("info","info-graphic","INFO.FS");
+        for(auto pair:{std::pair{"sound_move","M_SOUNDS.DEF"},std::pair{"sound_light","A_SOUNDS.DEF"},
+                      std::pair{"sound_armored","A_SOUNDS.DEF"},std::pair{"sound_air","A_SOUNDS.DEF"},
+                      std::pair{"sound_hit","Z_SOUNDS.DEF"},std::pair{"sound_action","S_SOUNDS.DEF"},std::pair{"sound_selection","H_SOUNDS.DEF"}})
+            game_ref(out,row,field(pair.first),"definition",std::to_string(unit.at(pair.first).num()),"class:"+std::string(pair.second));
+        const auto action=unit.at("action_id").num();
+        if(action==2||action==3||action==5||action==7||action==8||action==16||action==17){
+            const auto& params=unit.at("action_params").arr();if(params.size()!=3)fail("Invalid unit action parameters");
+            game_ref(out,row,field("action_params[2]"),"definition",std::to_string(params[2].num()),"unit");
+        }
+        ++out.metadata_coverage["unit-types"];
+        if(unit.get("class_semantics")&&unit.get("fire_semantics")&&unit.get("projectile_targets")&&unit.get("unmapped_bytes"))
+            ++out.metadata_coverage["unit-types-with-explicit-flags"];
+        else ++out.metadata_coverage["unit-types-with-legacy-metadata"];
+    }
+    // Check decoded fields against the embedded exact record bytes using
+    // the same versioned decoder. This is not an independent ISO comparison.
+    sc::Asset source;source.name=row.name;source.format=row.format;
+    auto decoded=sc::unit_definitions(source,original);
+    if(!decoded)fail("Unit record identity mismatch");
+    auto canonical=parse(*decoded);
+    auto& expected=canonical.at("units").arr();
+    for(std::size_t i=0;i<units.size();++i)for(const auto& [key,value]:units[i].obj()){
+        if(auto v=expected[i].get(key);v&&!(value==*v))fail("Unit decoded field differs from embedded bytes: "+std::to_string(i)+"/"+key);
+    }
+    game_def(out,row,"unit",std::move(ids));
+}
+static void class_metadata(PackageSummary& out,const AuditRecord& row,const J& m){
+    schema(m,"spellcross-class-table");
+    const auto table=game_upper(m.at("table").str());
+    std::vector<std::string> ids;
+    for(const auto& rec:m.at("records").arr()){
+        const auto id=std::to_string(rec.at("id").num());ids.push_back(id);
+        const auto& values=rec.at("values").arr();
+        if(table=="A_SOUNDS.DEF"||table=="H_SOUNDS.DEF"||table=="M_SOUNDS.DEF"||
+           table=="S_SOUNDS.DEF"||table=="Z_SOUNDS.DEF"||table=="O_SOUNDS.DEF"||table=="SAMPLES.DEF"){
+            for(std::size_t i=0;i<values.size();++i)game_ref(out,row,"class["+id+"].values["+std::to_string(i)+"]","sample",values[i].str(),"SAMPLES.FS");
+        }
+        if(table=="MURY.DEF"||table=="MOSTY.DEF"||table=="SPECOBJ.DEF"){
+            if(values.size()!=3)fail("Invalid object class record");
+            game_ref(out,row,"class["+id+"].sound_class","definition",game_id(values[2].str()),"class:O_SOUNDS.DEF");
+        }
+        ++out.metadata_coverage["class-records"];
+    }
+    game_def(out,row,"class:"+table,std::move(ids));
+}
+static void script_metadata(PackageSummary& out,const AuditRecord& row,const J& m){
+    schema(m,"spellcross-script");
+    const auto name=game_leaf(row.name);
+    std::string domain=name.starts_with("LEVEL_")?"strategy":name=="RESEARCH.DEF"?"research":
+        name=="BONUSES.DEF"?"experience":name=="FORMACIE.DEF"?"formation":name=="UPGRADES.DEF"?"upgrade":
+        name=="HODNOSTI.DEF"?"commander":name=="UPGROUPS.DEF"?"upgrade-group":name=="MUSIC.DEF"?"music":
+        name=="TUTORIAL.DEF"||row.format=="TUT"?"tutorial":name.starts_with("M")&&name.ends_with(".DEF")?"tactical":"other";
+    std::vector<std::size_t> stack;
+    std::vector<std::size_t> local;
+    for(const auto& rec:m.at("records").arr()){
+        auto kind=rec.at("kind").str();
+        if(kind=="unknown"){++out.unreviewed_commands[domain+":unparsed-line"];continue;}
+        if(kind=="end"){
+            if(stack.empty())fail("Unbalanced game metadata block");
+            stack.pop_back();continue;
+        }
+        const auto keyword=game_upper(rec.at("keyword").str());
+        std::vector<std::string> args;for(const auto& a:rec.at("args").arr())args.push_back(a.str());
+        const auto line=rec.at("line").num();
+        if(kind=="block"){
+            auto pos=out.game_blocks.size();local.push_back(pos);stack.push_back(pos);
+            out.game_blocks.push_back({row.id,domain,keyword,args.empty()?"":args.front(),line,std::move(args),{}});
+        }else if(kind=="call"){
+            if(stack.empty()){
+                // Preserve top-level calls as a synthetic block, without
+                // manufacturing a block in the authoritative source script.
+                if(local.empty()||out.game_blocks[local.back()].keyword!="TOP-LEVEL"){
+                    local.push_back(out.game_blocks.size());
+                    out.game_blocks.push_back({row.id,domain,"TOP-LEVEL","",line,{},{}});
+                }
+                out.game_blocks[local.back()].commands.push_back({line,keyword,std::move(args)});
+            }else out.game_blocks[stack.back()].commands.push_back({line,keyword,std::move(args)});
+        }else fail("Unknown ordered script record kind");
+    }
+    if(!stack.empty())fail("Unclosed game metadata block");
+    std::map<std::string,std::vector<std::string>> definitions;
+    for(auto pos:local){
+        const auto& block=out.game_blocks[pos];
+        if(block.keyword=="MISSION"&&domain=="strategy")definitions["mission:"+row.id].push_back(game_upper(block.key));
+        if(block.keyword=="EVENT"&&domain=="strategy")definitions["event:"+row.id].push_back(game_id(block.key));
+        if(block.keyword=="EVENTDATA"&&domain=="tactical")definitions["tactical-event:"+row.id].push_back(game_id(block.key));
+        if(block.keyword=="ITEM"&&domain=="research")definitions["research"].push_back(game_id(block.key));
+        if(block.keyword=="UPGRADE"&&domain=="upgrade")definitions["upgrade"].push_back(game_id(block.key));
+        if(block.keyword=="UNITLEVEL"&&domain=="experience")definitions["experience"].push_back(game_id(block.key));
+        if(block.keyword=="FORMATION"&&domain=="formation")definitions["formation"].push_back(game_id(block.key));
+        if(block.keyword=="MISSION"&&domain=="strategy")game_ref(out,row,"line "+std::to_string(block.line),"script",block.key,"COMMON.FS");
+        std::string research_flags;
+        for(const auto& cmd:block.commands)if(cmd.keyword=="FLAGS"&&!cmd.args.empty())research_flags=game_upper(cmd.args[0]);
+        for(const auto& cmd:block.commands){
+            const auto& k=cmd.keyword;const auto& args=cmd.args;
+            auto at=[&](std::size_t i,const char* kind,const std::string& scope,bool numeric=false){
+                if(i>=args.size()){++out.unreviewed_commands[domain+":"+k+":missing-argument"];return;}
+                auto target=numeric?game_id(args[i]):args[i];
+                game_ref(out,row,"line "+std::to_string(cmd.line)+" "+k+"["+std::to_string(i)+"]",kind,target,scope);
+            };
+            auto all=[&](std::size_t first,const std::string& scope){for(auto i=first;i<args.size();++i)at(i,"definition",scope,true);};
+            bool reviewed=true;
+            if(k=="MISSIONMAP")at(0,"map","COMMON.FS");
+            else if(k=="ADDUNIT"||k=="ADDSPECIALUNIT")at(1,"definition","unit",true);
+            else if(k=="ADDUNITTOPLAYER")at(0,"definition","unit",true);
+            else if(k=="ATTACKUNITS"||k=="ATTACKSPECIALUNITS"||k=="ARMY"||k=="SUITABLETYPES")all(0,"unit");
+            else if(k=="UNITSTOGROUP")all(1,"unit");
+            else if(k=="DEFINECOMMANDER"&&domain=="commander"&&!args.empty())definitions["commander"].push_back(game_id(args[0]));
+            else if(k=="TERRITORY"&&domain=="strategy"){
+                if(!args.empty())definitions["territory:"+row.id].push_back(game_id(args[0]));
+                at(1,"script","COMMON.FS");at(2,"map","COMMON.FS");at(3,"definition","music",false);
+            }else if(domain=="strategy"&&(k=="START"||k=="END"||k=="SETSPECIALTERRITORY"||k=="SETPLAYERSTERRITORY"||k=="DEFINESTRATEGICPOINTS"))at(0,"definition","territory:"+row.id,true);
+            else if(domain=="strategy"&&k=="WAITFORTERRITORIES")all(0,"territory:"+row.id);
+            else if(domain=="strategy"&&(k=="ENDOKMISSION"||k=="ENDBADMISSION"))at(0,"definition","mission:"+row.id);
+            else if(domain=="strategy"&&k=="CHANGEMISSION"){at(0,"definition","territory:"+row.id,true);at(1,"definition","mission:"+row.id);}
+            else if(domain=="strategy"&&(k=="ENDOKEVENT"||k=="ENDBADEVENT"))at(0,"definition","event:"+row.id,true);
+            else if(domain=="strategy"&&k=="RUNEVENTS")all(0,"event:"+row.id);
+            else if(k=="SETRESEARCHFLAG"||k=="WAITFORRESEARCH"||k=="ORCONNECTIONS")all(0,"research");
+            else if(domain=="research"&&k=="DATA"&&(research_flags=="NEWUNIT"||research_flags=="UNITTYPE"))at(0,"definition","unit",true);
+            else if(domain=="research"&&k=="DATA"&&research_flags=="UPGRADEITEM")at(0,"definition","upgrade",true);
+            else if(k=="LEVELMUSIC"||k=="MISSIONMUSIC")at(0,"definition","music");
+            else if(k=="ADDMUSIC"&&domain=="music"){
+                if(!args.empty())definitions["music"].push_back(game_upper(args[0]));
+                at(2,"music","MUSIC.FS");at(3,"music","MUSIC.FS");
+            }else if(k=="MISSIONTEXT"||k=="MISSIONSTARTTEXT"||k=="MISSIONENDOKTEXT"||k=="MISSIONENDBADTEXT"||k=="EVENTTEXT")at(0,"text","TEXTS.FS");
+            else if(k=="TUTORIALFILE")at(0,"script","COMMON.FS");
+            else if(k=="NEXTLEVEL"||k=="NEXTLEVELDEF")at(0,"script","COMMON.FS");
+            else if(k=="STARTSPEAKER"||k=="ENDSPEAKER")at(1,"movie","SPEAKER.FS");
+            else if(k.starts_with("PLAY")&&(k.find("ANIM")!=k.npos||k=="PLAYCANANIMATION")){
+                at(0,"movie","MOVIE.FS");
+                if(k=="PLAYSTARTMISSIONDELTAANIM"||k=="PLAYSTARTMISSIONCANANIM")all(1,"research");
+            }else if(k=="ATTACK"||k=="ATTACKPT"||k=="DEFENCE"||k=="MOVE"||k=="FLAGS"||k=="GROUP"||k=="LEVEL"||
+                     k=="TIME"||k=="ABSTIME"||k=="UPGRADETIME"||k=="UPGRADEPRICE"||k=="FREQUENCYOFRANDOMATTACKS"||
+                     k=="ATTACKFLAGS"||k=="ENDOK"||k=="ADDSTARTSQUARE"||k=="ADDESCAPESQUARE"||k=="ADDTARGETSQUARE"){}
+            else reviewed=false;
+            if(!reviewed)++out.unreviewed_commands[domain+":"+k];
+        }
+        ++out.metadata_coverage["script-blocks:"+domain];
+    }
+    for(auto& [kind,ids]:definitions)game_def(out,row,kind,std::move(ids));
+}
+
 PackageSummary validate_package(const Entries& entries,std::string_view expected){
     auto j=parse(entry(entries,"manifest.json").json);schema(j,"spellcross-pak");
     PackageSummary out;out.category=j.at("category").str();if(out.category!=expected)fail("Package category mismatch");
