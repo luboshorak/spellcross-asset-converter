@@ -889,7 +889,8 @@ class Frame final : public wxFrame {
         return result;
     }
     static sc::validation::AuditReport check_dataset(const std::filesystem::path& dir,
-                                     const std::function<bool(const std::string&)>& progress){
+                                     const std::function<bool(const std::string&)>& progress,
+                                     const std::vector<sc::validation::SourceRecord>* expected_source=nullptr){
         using namespace sc::validation;
         auto raw=read_media(dir/"manifest.json",64u*1024u*1024u);
         std::string root(raw.begin(),raw.end());
@@ -904,7 +905,7 @@ class Frame final : public wxFrame {
                 summaries.emplace(package.file,std::move(summary));
             }catch(const std::exception& e){throw std::runtime_error(package.file+": "+e.what());}
         }
-        return audit_report(root,summaries);
+        return audit_report(root,summaries,expected_source);
     }
     void validate_pak(){
         stop_play();wxDirDialog d(this,"Choose modern PAK dataset directory");
@@ -1212,7 +1213,13 @@ class Frame final : public wxFrame {
             root<<"},\"atlas_metrics\":{\"frames\":"<<frames<<",\"pages\":"<<pages<<",\"source_pixels\":"<<pixel_total
                 <<",\"png_bytes\":"<<png_total<<"}}\n";
             write_manifest_file(dest/"manifest.json",root.str());
-            auto verified=check_dataset(dest,[&](const std::string& p){return progress.Pulse("Verifying "+w(p));});
+            std::vector<sc::validation::SourceRecord> expected_source;
+            expected_source.reserve(total);
+            for(const auto& [category,items]:packages)for(auto i:items){
+                const auto& a=inv.assets[i];
+                expected_source.push_back({ids[i],a.name,a.format,category,a.size});
+            }
+            auto verified=check_dataset(dest,[&](const std::string& p){return progress.Pulse("Verifying "+w(p));},&expected_source);
             write_manifest_file(dest/"pak-audit.txt",verified.summary);
             write_manifest_file(dest/"pak-audit.tsv",verified.records_tsv);
             validation->ChangeValue(w(verified.summary));log(w(verified.summary));
