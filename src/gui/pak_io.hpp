@@ -24,7 +24,10 @@ inline sc::validation::Entries read_pak(const std::filesystem::path& filename){
     std::array<unsigned char,65536> buffer{};
     while(auto item=std::unique_ptr<wxZipEntry>(zip.GetNextEntry())){
         if(result.size()>=300000)throw std::runtime_error("PAK entry count limit");
-        auto utf=item->GetName(wxPATH_UNIX).utf8_str();
+        // On UTF-8 wxWidgets builds the conversion buffer may borrow the
+        // wxString's storage. Keep the name alive until its bytes are copied.
+        const wxString zip_name=item->GetName(wxPATH_UNIX);
+        auto utf=zip_name.utf8_str();
         std::string name(utf.data(),utf.length());
         if(item->IsDir()||!safe_entry(name)||result.contains(name))
             throw std::runtime_error("Unsafe or duplicate PAK entry: "+name);
