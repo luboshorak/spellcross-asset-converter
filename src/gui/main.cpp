@@ -574,7 +574,7 @@ class Frame final : public wxFrame {
                 image.SetRGB(wxRect(0,0,image.GetWidth(),image.GetHeight()),36,47,35);
                 for(int i=0;i<n;++i)image.SetRGB(wxRect((i%16)*16,(i/16)*16,16,16),data[i*3],data[i*3+1],data[i*3+2]);
                 graphic->SetImage(image);preview_tabs->SetSelection(0);
-            }else if(sc::is_text_asset(*a,full)&&full.size()==a->size){
+            }else if(sc::is_text_asset(*a,full)&&(sc::compressed(*a)||full.size()==a->size)){
                 text_view->SetValue(decode_text(narrative(*a)?sc::narrative_display(full):full,a));preview_tabs->SetSelection(4);
             }else if(sc::compressed(*a)){preview_tabs->SetSelection(2);}
             else{preview_tabs->SetSelection(1);}
@@ -1417,7 +1417,7 @@ public:
         auto* root=new wxBoxSizer(wxVERTICAL);SetSizer(root);
         auto* header=new sc::ui::Panel(this);auto* hs=new wxBoxSizer(wxVERTICAL);header->SetSizer(hs);
         label(header,hs,"SPELLCROSS  /  ASSET CONVERTER",true);
-        label(header,hs,"RELOADED TOOLKIT   |   v0.9.7   |   Original data inventory");
+        label(header,hs,"RELOADED TOOLKIT   |   v0.9.8   |   Original data inventory");
         root->Add(header,0,wxEXPAND);
         auto* page_nav=new wxGridSizer(5,2,2);root->Add(page_nav,0,wxEXPAND|wxLEFT|wxRIGHT,8);
         tabs=new sc::ui::Book(this,this,page_nav);root->Add(tabs,1,wxALL|wxEXPAND,8);

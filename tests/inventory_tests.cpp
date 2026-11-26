@@ -1,3 +1,4 @@
+#include <tuple>
 #include "spellcross/inventory.hpp"
 #include "spellcross/graphics.hpp"
 #include "spellcross/video.hpp"
@@ -358,6 +359,41 @@ int main(){
         }
         context_asset.name="COMMON.FS::BM_LSTA.LZ";auto bm=sc::decode_image(context_asset,B(5785,196));require(bm&&bm->width==65&&bm->height==89&&bm->opaque[0]==255);
         context_asset.name="COMMON.FS::T01.LZ";auto tut_button=sc::decode_image(context_asset,B(6200));require(tut_button&&tut_button->width==200&&tut_button->height==31&&sc::asset_palette(palette_fixture,context_asset,tactical).rgb[0]==80);
+        // Remaining retail UI assets: dimensions reconstructed from EN pixel arrays.
+        sc::Asset retail;retail.member=true;retail.format="LZ";
+        for(auto [name,w,h]:std::vector<std::tuple<std::string,int,int>>{
+            {"INFO.FS::IBG_600.LZ",800,600},{"INFO.FS::NAMELSTA.LZ",200,80},
+            {"COMMON.FS::DIFFIC.LZ",249,152},{"COMMON.FS::GOTOLSTA.LZ",176,91},
+            {"COMMON.FS::LED_OFF.LZ",9,8},{"COMMON.FS::LED_ON.LZ",9,8}}){
+            retail.name=name;auto image=sc::decode_image(retail,B(w*h,7));
+            require(image&&image->width==w&&image->height==h);
+        }
+        retail.name="INFO.FS::PATTERN.DTA";retail.format="DTA";
+        auto pattern=sc::decode_image(retail,B(1024,0));require(pattern&&pattern->width==32&&pattern->height==32&&pattern->opaque[0]==255);
+        retail.name="DATA/INSTALL.DTA::DATA/COMMON.FS::C02.LZ";retail.format="LZ";
+        require(sc::is_text_asset(retail,B{'I','N','T','R','O','.','S','M','K'}));
+        require(!sc::is_text_asset(retail,B{'I',0,'N'}));
+        retail.name="MUSIC.FS::C02.LZ";require(!sc::is_text_asset(retail,B{'I','N','T','R','O'}));
+        // Single-entry Windows ICO with 2x2 bottom-up 8-bit DIB, BGRA
+        // palette, 4-byte aligned XOR rows and separate 1-bit AND mask.
+        B win(22+40+8+8+8);
+        win[2]=1;win[4]=1;win[6]=2;win[7]=2;win[8]=2;
+        le(win,14,64);le(win,18,22);
+        le(win,22,40);le(win,26,2);le(win,30,4);win[34]=1;win[36]=8;le(win,54,2);
+        win[62]=10;win[63]=20;win[64]=30;
+        win[66]=40;win[67]=50;win[68]=60;
+        win[70]=1;win[71]=0;win[74]=0;win[75]=1;
+        win[82]=0x40; // top right pixel is transparent
+        write(t.p/"SPELCROS.ICO",win);
+        sc::Asset win_asset{t.p/"SPELCROS.ICO","DATA/INSTALL.DTA::SPELCROS.ICO","ICO",0,win.size(),true};
+        auto win_image=sc::decode_image(win_asset,win);
+        require(win_image&&win_image->width==2&&win_image->height==2&&win_image->indices==B({0,1,1,0})&&
+                win_image->opaque==B({255,0,255,255})&&!win_image->opaque_zero_uses_254);
+        auto win_palette=sc::asset_palette({},win_asset,tactical);
+        require(win_palette.known[0]&&win_palette.known[1]&&!win_palette.known[2]&&win_palette.rgb[0]==30&&win_palette.rgb[3]==60);
+        win.pop_back();bool truncated_icon=false;
+        try{sc::decode_image(win_asset,win);}catch(const std::exception&){truncated_icon=true;}
+        require(truncated_icon);
         std::cout<<"Inventory, graphics, video, atlas, semantic, campaign, music and presentation tests passed\n";
     }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}
 }
