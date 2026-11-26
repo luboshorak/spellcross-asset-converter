@@ -323,6 +323,50 @@ int main(){
         require(coverage_report.summary.find("modern-payload: 1")!=std::string::npos&&
                 coverage_report.summary.find("not certified")!=std::string::npos&&
                 coverage_report.records_tsv.find("utf8-text")!=std::string::npos);
+        {
+            require(!has_resource_catalog(dataset));
+            auto root_with_catalog=std::string(dataset);
+            root_with_catalog.insert(1,"\"resource_catalog\":\"resources.json\",");
+            require(has_resource_catalog(root_with_catalog));
+            const auto one_catalog=resource_catalog(root_with_catalog,{{"common.pak",summary}});
+            require(one_catalog==coverage_report.catalog_json);
+            validate_resource_catalog(one_catalog,root_with_catalog,{{"common.pak",summary}});
+            validate_resource_catalog(" \n"+one_catalog,root_with_catalog,{{"common.pak",summary}});
+            require(one_catalog.find("\"original\":{\"entry\":\"original.bin\",\"offset\":1,\"size\":2}")!=std::string::npos);
+            require(one_catalog.find("\"by_leaf\":{\"A\":[\"a#1\"]}")!=std::string::npos);
+            auto altered_catalog=one_catalog;
+            auto owner_pos=altered_catalog.find("\"package\":\"common.pak\"");
+            require(owner_pos!=std::string::npos);
+            altered_catalog.replace(owner_pos,std::string("\"package\":\"common.pak\"").size(),"\"package\":\"other.pak\"");
+            bool bad_catalog=false;try{validate_resource_catalog(altered_catalog,root_with_catalog,{{"common.pak",summary}});}catch(const std::exception&){bad_catalog=true;}require(bad_catalog);
+            auto unsafe_root=root_with_catalog;
+            auto catalog_pos=unsafe_root.find("resources.json");
+            unsafe_root.replace(catalog_pos,14,"../evil.json");
+            bool unsafe_catalog=false;try{has_resource_catalog(unsafe_root);}catch(const std::exception&){unsafe_catalog=true;}require(unsafe_catalog);
+
+            // Two packages, same leaf name, distinct stable IDs. Include a
+            // byte-preserving non-ASCII source name and duplicate case aliases.
+            Entries collision_entries;
+            collision_entries["original.bin"].size=4;
+            collision_entries["text.txt"].size=2;
+            collision_entries["manifest.json"].json=R"({"schema":"spellcross-pak","version":1,"category":"common","partial":false,"records":[{"id":"COMMON.FS::\u00e9/A.TXT#1","name":"COMMON.FS::\u00e9/A.TXT","format":"TXT","status":"converted","original":{"entry":"original.bin","offset":0,"size":2},"payload":"text.txt"}],"graphics":[],"palettes":[]})";
+            auto common_collision=validate_package(collision_entries,"common");
+            collision_entries["manifest.json"].json=R"({"schema":"spellcross-pak","version":1,"category":"info","partial":false,"records":[{"id":"INFO.FS::a.txt#1","name":"INFO.FS::a.txt","format":"TXT","status":"converted","original":{"entry":"original.bin","offset":2,"size":2},"payload":"text.txt"}],"graphics":[],"palettes":[]})";
+            auto info_collision=validate_package(collision_entries,"info");
+            const auto collision_root=R"({"schema":"spellcross-dataset","version":1,"partial":false,"runtime_ready":false,"resource_catalog":"resources.json","packages":[{"file":"common.pak","category":"common","records":1,"converted":1,"decoded":0,"raw":0,"failed":0,"containers":0},{"file":"info.pak","category":"info","records":1,"converted":1,"decoded":0,"raw":0,"failed":0,"containers":0}],"coverage_by_format":{"common/TXT":{"converted":1},"info/TXT":{"converted":1}},"atlas_metrics":{"frames":0,"pages":0,"source_pixels":0,"png_bytes":0}})";
+            std::map<std::string,PackageSummary> collision_summaries{{"common.pak",common_collision},{"info.pak",info_collision}};
+            auto collision_catalog=resource_catalog(collision_root,collision_summaries);
+            const std::string first_id="COMMON.FS::\xc3\xa9/A.TXT#1";
+            require(collision_catalog.find("\"A.TXT\":[\""+first_id+"\",\"INFO.FS::a.txt#1\"]")!=std::string::npos);
+            validate_resource_catalog(collision_catalog,collision_root,collision_summaries);
+            auto missing_alias=collision_catalog;
+            auto alias_pos=missing_alias.find("\"A.TXT\":[");
+            require(alias_pos!=std::string::npos);
+            missing_alias.erase(alias_pos+9,first_id.size()+3);
+            bool bad_alias=false;try{validate_resource_catalog(missing_alias,collision_root,collision_summaries);}catch(const std::exception&){bad_alias=true;}require(bad_alias);
+            collision_summaries.at("info.pak").audit_records[0].id=first_id;
+            bool duplicate_global=false;try{resource_catalog(collision_root,collision_summaries);}catch(const std::exception&){duplicate_global=true;}require(duplicate_global);
+        }
         std::vector<SourceRecord> source_records{{"a#1","a","TXT","common",2}};
         auto matched_report=audit_report(dataset,{{"common.pak",summary}},&source_records);
         require(matched_report.summary.find("checked against selected scan")!=std::string::npos);
@@ -365,6 +409,17 @@ int main(){
         auto graphics_summary=validate_package(entries,"units");require(graphics_summary.frames==1&&graphics_summary.pixels==9&&graphics_summary.png_bytes==24);
         require(graphics_summary.audit_records.at(0).assessment=="semantic-review"&&
                 graphics_summary.audit_records.at(0).notes=="Missing FSU layout");
+        {
+            require(graphics_summary.atlas_groups.size()==1&&graphics_summary.atlas_groups[0].group=="a"&&
+                    graphics_summary.atlas_groups[0].entry=="frames.json"&&graphics_summary.atlas_groups[0].frames==1&&
+                    !graphics_summary.atlas_groups[0].fsu_layout);
+            require(graphics_summary.audit_records[0].atlas_entry=="frames.json"&&graphics_summary.audit_records[0].atlas_frames==1);
+            const auto graphics_root=R"({"schema":"spellcross-dataset","version":1,"partial":false,"runtime_ready":false,"resource_catalog":"resources.json","packages":[{"file":"units.pak","category":"units","records":1,"converted":1,"decoded":0,"raw":0,"failed":0,"containers":0}],"coverage_by_format":{"units/FSU-SPRITE":{"converted":1}},"atlas_metrics":{"frames":1,"pages":1,"source_pixels":9,"png_bytes":24}})";
+            const auto graphic_catalog=resource_catalog(graphics_root,{{"units.pak",graphics_summary}});
+            require(graphic_catalog.find("\"by_group\":{\"A\":[0]}")!=std::string::npos);
+            require(graphic_catalog.find("\"atlas\":{\"entry\":\"frames.json\",\"frames\":1}")!=std::string::npos);
+            validate_resource_catalog(graphic_catalog,graphics_root,{{"units.pak",graphics_summary}});
+        }
         {
             // Small retail table fixtures: preserve exact bit positions and values.
             sc::Asset table_asset;table_asset.member=true;table_asset.name="COMMON.FS::LEVEL_02.SSD";table_asset.format="SSD";
