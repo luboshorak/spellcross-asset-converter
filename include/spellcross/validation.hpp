@@ -67,6 +67,8 @@ struct AuditReport {std::string summary,records_tsv,catalog_json,game_metadata_j
 // Optional v1 extension: deterministic dataset-wide lookup index derived
 // exclusively from validated package manifests.
 bool has_resource_catalog(std::string_view root);
+bool has_game_metadata(std::string_view root);
+void validate_game_metadata(std::string_view stored,std::string_view expected);
 std::string resource_catalog(std::string_view root,const std::map<std::string,PackageSummary>&);
 void validate_resource_catalog(std::string_view catalog,std::string_view root,
                                const std::map<std::string,PackageSummary>&);
