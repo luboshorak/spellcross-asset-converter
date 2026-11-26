@@ -70,6 +70,10 @@ bool legacy_support_asset(const Asset& a){
     auto n=leaf(a.name),full=upper(a.name);
     std::replace(full.begin(),full.end(),'\\','/');
     const auto block=leaf(block_name(a));
+    // Owner-approved archival exceptions: exact source identity and size.
+    // Do not suppress a different or full-sized video with the same name.
+    if(a.member&&block=="COMMON.FS"&&n=="BOXER.LST"&&a.format=="LST"&&a.size==225)return true;
+    if(a.member&&block=="MOVIE.FS"&&n=="TEMP.DPK"&&a.format=="DPK"&&a.size==525)return true;
     if(block=="INSTALL.FS"&&n.size()==7&&n.starts_with("MSG")&&
        std::all_of(n.begin()+3,n.end(),[](char c){return c>='0'&&c<='9';}))return true;
     // Explicit DOS support paths and filenames, not a blanket rule for

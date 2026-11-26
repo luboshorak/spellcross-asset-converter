@@ -279,6 +279,13 @@ int main(){
         sc::Asset map_asset;map_asset.format="DTA";map_asset.name="COMMON.FS::M01_01.DTA";
         auto modern_map=sc::tactical_map(map_asset,map_data);
         require(modern_map&&modern_map->ground==B({0,0x20})&&modern_map->objects==B({0,0x81})&&modern_map->metadata.find("\"trailing_hex\":\"abcd\"")!=std::string::npos);
+        {
+            auto temp_map_asset=map_asset;temp_map_asset.name="COMMON.FS::TEMPFILE.MAP";temp_map_asset.format="MAP";
+            auto temp_map=sc::tactical_map(temp_map_asset,map_data);
+            require(temp_map&&temp_map->ground==modern_map->ground&&temp_map->objects==modern_map->objects&&temp_map->metadata==modern_map->metadata);
+            auto invalid_map=map_data;invalid_map[8]=0;
+            require(!sc::tactical_map(temp_map_asset,invalid_map));
+        }
         map_data[34]=1;bool rejected=false;try{sc::tactical_map(map_asset,map_data);}catch(const std::exception&){rejected=true;}require(rejected);
         script.name="A_SOUNDS.DEF";source="; preamble\n; [02] attack\nFIRE\n#\nHIT\nMISS\n";
         auto classes=sc::class_definition(script,B(source.begin(),source.end()));
@@ -388,11 +395,23 @@ int main(){
             require(sc::legacy_support_asset(dos));
             dos.name="DATA/INSTALL.FS::MSG0000";dos.format="UNKNOWN";require(sc::legacy_support_asset(dos));
             dos.name="COMMON.FS::MSG0000";require(!sc::legacy_support_asset(dos));
-            dos.name="MOVIE.FS::TEMP.DPK";dos.format="DPK";require(!sc::legacy_support_asset(dos));
+            dos.name="MOVIE.FS::TEMP.DPK";dos.format="DPK";dos.size=525;require(sc::legacy_support_asset(dos));
+            dos.size=526;require(!sc::legacy_support_asset(dos));
+            dos.size=525;dos.name="MOVIE.FS::OTHER.DPK";require(!sc::legacy_support_asset(dos));
+            dos.name="COMMON.FS::TEMP.DPK";require(!sc::legacy_support_asset(dos));
+            dos.name="COMMON.FS::BOXER.LST";dos.format="LST";dos.size=225;require(sc::legacy_support_asset(dos));
+            dos.size=224;require(!sc::legacy_support_asset(dos));
             Entries legacy_entries;
             legacy_entries["original.bin"].size=42;
             legacy_entries["manifest.json"].json=R"({"schema":"spellcross-pak","version":1,"category":"other","partial":false,"records":[{"id":"a#1","name":"DATA/INSTALL.FS::MSG0000","format":"UNKNOWN","status":"raw","role":"legacy-only","original":{"entry":"original.bin","offset":0,"size":42}}],"graphics":[],"palettes":[]})";
             require(validate_package(legacy_entries,"other").audit_records.at(0).assessment=="legacy-only");
+            legacy_entries["original.bin"].size=525;
+            legacy_entries["manifest.json"].json=R"({"schema":"spellcross-pak","version":1,"category":"movies","partial":false,"records":[{"id":"temp#1","name":"DATA/MOVIE.FS::TEMP.DPK","format":"DPK","status":"raw","role":"legacy-only","original":{"entry":"original.bin","offset":0,"size":525}}],"graphics":[],"palettes":[]})";
+            require(validate_package(legacy_entries,"movies").audit_records.at(0).assessment=="legacy-only");
+            legacy_entries["original.bin"].size=526;
+            auto& manifest=legacy_entries["manifest.json"].json;
+            manifest.replace(manifest.find("\"size\":525"),10,"\"size\":526");
+            bool different_temp=false;try{validate_package(legacy_entries,"movies");}catch(const std::exception&){different_temp=true;}require(different_temp);
         }
         // Failed retail terrain remains failed, but has a renderable sentinel.
         sc::Asset damaged;damaged.name="DATA/DEVAST.FS::DMA0_270.DTA";damaged.format="DTA";damaged.member=true;

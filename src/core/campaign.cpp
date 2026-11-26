@@ -198,7 +198,7 @@ std::optional<std::string> class_definition(const Asset& a,Span d){
 std::optional<MapPayload> tactical_map(const Asset& a,Span d){
     // DTA also denotes terrain tile resources. Version byte + known terrain
     // header distinguish retail tactical maps from their graphics.
-    if(a.format!="DTA"||d.size()<26||d[8]!=0x12)return std::nullopt;
+    if((a.format!="DTA"&&a.format!="MAP")||d.size()<26||d[8]!=0x12)return std::nullopt;
     Reader r{d};auto l1off=r.u32(),l1=r.u32();r.u8();
     auto w=r.u16(),h=r.u16();auto terrain=r.fixed(13);
     auto t=lower(terrain);if(t!="t11"&&t!="pust"&&t!="devast")return std::nullopt;
