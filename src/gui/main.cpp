@@ -330,7 +330,7 @@ class Frame final : public wxFrame {
     }
     std::string localization_json(const sc::Asset& a,const std::vector<sc::Bytes>& rows){
         std::ostringstream o;o<<"{\"schema\":\"spellcross-language-table\",\"version\":1,\"language\":"<<sc::pack::json(sc::language_for(a,edition))<<",\"entries\":[";
-        for(std::size_t i=0;i<rows.size();++i){if(i)o<<',';auto u=decode_text(rows[i],&a).utf8_str();o<<"{\"id\":"<<i<<",\"text\":"<<utf8_json(std::string_view(u.data(),u.length()))<<"}";}
+        for(std::size_t i=0;i<rows.size();++i){if(i)o<<',';const auto decoded=decode_text(rows[i],&a);auto u=decoded.utf8_str();o<<"{\"id\":"<<i<<",\"text\":"<<utf8_json(std::string_view(u.data(),u.length()))<<"}";}
         o<<"]}\n";return o.str();
     }
     static std::string animation_json(const sc::AnimationLayout& layout,const std::vector<std::string>& ids){
@@ -987,7 +987,7 @@ class Frame final : public wxFrame {
                                 auto music=sc::music_kind(data);
                                 if(auto rows=sc::language_table(a,data)){
                                     add_text("language.json",localization_json(a,*rows));
-                                    auto utf=decode_text(data,&a).utf8_str();add_text("source.txt",std::string(utf.data(),utf.length()));
+                                    const auto decoded_text=decode_text(data,&a);auto utf=decoded_text.utf8_str();add_text("source.txt",std::string(utf.data(),utf.length()));
                                     status="converted";detail="Positional UTF-8 language table";payload=base+"language.json";
                                 }else if(music==sc::MusicKind::midi){
                                     sc::validate_midi(data);derived.emplace_back("music.mid",std::move(data));status="converted";detail="Validated standard MIDI; bytes unchanged";payload=base+"music.mid";
@@ -1008,13 +1008,13 @@ class Frame final : public wxFrame {
                                     // Companion text is convenient for editing; the authoritative
                                     // syntax JSON and original source are retained independently.
                                     try{
-                                        auto utf=decode_text(data,&a).utf8_str();
+                                        const auto decoded_text=decode_text(data,&a);auto utf=decoded_text.utf8_str();
                                         add_text("source.txt",std::string(utf.data(),utf.length()));
                                     }catch(const std::exception& e){log("Script source text: "+w(a.name)+": "+w(e.what()));}
                                     status="converted";detail="Ordered script syntax; runtime interpretation not yet migrated";payload=base+"script.json";
                                 }else if(auto table=sc::class_definition(a,data)){
                                     add_text("classes.json",*table);
-                                    try{auto utf=decode_text(data,&a).utf8_str();add_text("source.txt",std::string(utf.data(),utf.length()));}
+                                    try{const auto decoded_text=decode_text(data,&a);auto utf=decoded_text.utf8_str();add_text("source.txt",std::string(utf.data(),utf.length()));}
                                     catch(const std::exception& e){log("Class source text: "+w(a.name)+": "+w(e.what()));}
                                     status="converted";detail="Ordered or ID-keyed class table with original values";payload=base+"classes.json";
                                 }else if(auto sample=sc::decode_sample(a,data)){
@@ -1046,7 +1046,7 @@ class Frame final : public wxFrame {
                                     if(images.empty())throw std::runtime_error("Empty animation");
                                 }else if(auto im=sc::decode_image(a,data))images.push_back(std::move(*im));
                                 else if(sc::is_text_asset(a,data)){
-                                    auto utf=decode_text(narrative(a)?sc::narrative_display(data):data,&a).utf8_str();add_text("text.txt",std::string(utf.data(),utf.length()));
+                                    const auto decoded_text=decode_text(narrative(a)?sc::narrative_display(data):data,&a);auto utf=decoded_text.utf8_str();add_text("text.txt",std::string(utf.data(),utf.length()));
                                     status="converted";detail="UTF-8 text";payload=base+"text.txt";
                                 }else if(a.format=="PAL"&&data.size()>=3&&data.size()<=768&&data.size()%3==0){
                                     derived.emplace_back("palette.rgb",std::move(data));status="converted";detail="Original RGB triples";payload=base+"palette.rgb";
@@ -1226,7 +1226,7 @@ class Frame final : public wxFrame {
                                 add_text("sprite.json",sc::sprite_metadata(a,*image,p));
                                 status="converted";detail="Indexed image and metadata";
                             }else if(sc::is_text_asset(a,data)){
-                                auto utf=decode_text(data,&a).utf8_str();
+                                const auto decoded_text=decode_text(data,&a);auto utf=decoded_text.utf8_str();
                                 add_text("text.txt",std::string(utf.data(),utf.length()));
                                 status="converted";detail="UTF-8 text";
                             }else if(a.format=="PAL"&&data.size()>=3&&data.size()<=768&&data.size()%3==0){
