@@ -247,8 +247,8 @@ class Frame final : public wxFrame {
             if(d.ShowModal()!=wxID_OK)return;
             source=d.GetPath();
         } else {
-            wxFileDialog d(this,"Choose original disc image or FS archive","","",
-                "Disc image or FS / FSU archive (*.iso;*.fs;*.fsu)|*.iso;*.fs;*.fsu|All files (*.*)|*.*",wxFD_OPEN|wxFD_FILE_MUST_EXIST);
+            wxFileDialog d(this,"Choose original ISO, INSTALL.DTA or FS/FSU archive","","",
+                "Original game containers (*.iso;*.dta;*.fs;*.fsu)|*.iso;*.dta;*.fs;*.fsu|All files (*.*)|*.*",wxFD_OPEN|wxFD_FILE_MUST_EXIST);
             if(d.ShowModal()!=wxID_OK)return;
             source=d.GetPath();
         }
@@ -267,10 +267,11 @@ class Frame final : public wxFrame {
             log("Scanned "+source);
             for(auto& warning:inv.warnings) log("WARNING: "+w(warning));
             stats->SetLabel("Source: "+w(inv.source_kind)+"\n\nInventory records: "+number(inv.assets.size())+
+                "\nINSTALL.DTA containers: "+number(inv.install_archives)+"\nInstalled files indexed: "+number(inv.install_files)+
                 "\nFS archives parsed: "+number(inv.fs_archives)+"\nFSU archives: "+number(inv.fsu_archives)+
                 "\nSprite groups: "+number(inv.fsu_resources)+"\nSprites: "+number(inv.fsu_sprites)+"\nWarnings: "+number(inv.warnings.size())+
-                "\n\nEdition detection: not yet implemented.");
-            validation->SetLabel("FS / FSU directory and member bounds checked during scan.\n"+
+                "\n\nEdition language: "+w(sc::edition_language(inv)));
+            validation->SetLabel("INSTALL.DTA / FS / FSU directory and member bounds checked during scan.\n"+
                 number(inv.warnings.size())+" warning(s). See Log for details.\n"+
                 "Use Validate compressed assets to check LZ and FSU decoding. Checksums are not yet implemented.");
             rebuild_blocks();refresh();
@@ -334,6 +335,9 @@ class Frame final : public wxFrame {
          <<",\"azimuth_zero_degrees\":90,\"azimuth_direction\":\"clockwise\",\"static_by_slope\":";
         rows(layout.stat);o<<",\"animation_by_azimuth_or_slope\":";rows(layout.anim);o<<'}';return o.str();
     }
+    static bool matches_block(const sc::Asset& a,const std::string& key){
+        return sc::block_name(a)==key||(!key.empty()&&a.name.starts_with(key+"::"));
+    }
     void rebuild_blocks(){
         edition=sc::edition_language(inv);
         blocks.clear();block_keys.clear();block_choice->Clear();block_choice->Append("All game data");
@@ -359,7 +363,7 @@ class Frame final : public wxFrame {
             if(type=="Sprites"&&a.format!="FSU-SPRITE")continue;
             if(type=="Palettes"&&a.format!="PAL")continue;
             if(type=="Compressed"&&a.format!="LZ"&&a.format!="LZ0"&&a.format!="FSU-SPRITE")continue;
-            if(type=="Archives"&&a.format!="FS"&&a.format!="FSU")continue;
+            if(type=="Archives"&&a.format!="FS"&&a.format!="FSU"&&a.format!="INSTALL-DTA")continue;
             if(type=="Text / definitions"&&a.format!="DEF"&&a.format!="TXT"&&a.format!="BRF"&&a.format!="TUT")continue;
             if(type=="Maps"&&a.format!="DTA")continue;
             std::string logical=a.name;
@@ -883,7 +887,7 @@ class Frame final : public wxFrame {
         std::vector<std::string> ids(inv.assets.size());
         for(std::size_t i=0;i<inv.assets.size();++i){
             const auto& a=inv.assets[i];ids[i]=sc::pack::stable_id(a,++occurrences[a.name]);
-            if(partial&&sc::block_name(a)!=block_keys.at(static_cast<std::size_t>(choice-1)))continue;
+            if(partial&&!matches_block(a,block_keys.at(static_cast<std::size_t>(choice-1))))continue;
             packages[sc::pack::category(a)].push_back(i);
         }
         std::size_t total=0;for(auto& [key,items]:packages)total+=items.size();if(!total)return;
@@ -915,7 +919,7 @@ class Frame final : public wxFrame {
                 for(auto i:items){
                     const auto& a=inv.assets[i];
                     groups[sc::pack::group(a)].push_back(i);
-                    if(!a.member&&(a.format=="FS"||a.format=="FSU")){
+                    if(a.format=="FS"||a.format=="FSU"||a.format=="INSTALL-DTA"){
                         source_containers[a.name].push_back(i);
                         auto loc="original/containers/"+std::to_string(i)+".bin";
                         zip_original(zip,w(loc),a);container_paths[i]=loc;
@@ -1171,8 +1175,13 @@ class Frame final : public wxFrame {
         if(d.ShowModal()!=wxID_OK)return;
         std::vector<std::string> keys;
         int choice=block_choice->GetSelection();
-        if(choice<=0)keys=block_keys;else keys.push_back(block_keys.at(static_cast<std::size_t>(choice-1)));
-        std::size_t total=0;for(auto& key:keys)total+=blocks.at(key).size();
+        std::map<std::string,std::vector<std::size_t>> selected_blocks;
+        if(choice<=0){keys=block_keys;selected_blocks=blocks;}
+        else{
+            auto key=block_keys.at(static_cast<std::size_t>(choice-1));keys.push_back(key);
+            for(std::size_t i=0;i<inv.assets.size();++i)if(matches_block(inv.assets[i],key))selected_blocks[key].push_back(i);
+        }
+        std::size_t total=0;for(auto& key:keys)total+=selected_blocks.at(key).size();
         if(!total)return;
         std::filesystem::path dest;
         try{
@@ -1181,7 +1190,7 @@ class Frame final : public wxFrame {
             std::size_t done=0,converted=0,decoded=0,raw=0,failed=0,block_number=0;
             std::ostringstream catalogue;catalogue<<"zip\tlogical_block\tassets\n";
             for(auto& key:keys){
-                const auto& ids=blocks.at(key);
+                const auto& ids=selected_blocks.at(key);
                 std::string basename=key.empty()?"loose-files":key.substr(key.find_last_of("/\\")==std::string::npos?0:key.find_last_of("/\\")+1);
                 for(auto& ch:basename)if(!((ch>='a'&&ch<='z')||(ch>='A'&&ch<='Z')||(ch>='0'&&ch<='9')||ch=='-'||ch=='_'||ch=='.'))ch='_';
                 if(basename.size()>80)basename.resize(80);
@@ -1200,7 +1209,7 @@ class Frame final : public wxFrame {
                     std::vector<std::pair<wxString,sc::Bytes>> derived;
                     auto add_text=[&](const wxString& n,const std::string& v){derived.emplace_back(n,sc::Bytes(v.begin(),v.end()));};
                     try{
-                        if(a.format=="FS"||a.format=="FSU"){detail="Original container retained with its catalogued members";}
+                        if(a.format=="FS"||a.format=="FSU"||a.format=="INSTALL-DTA"){detail="Original container retained with its catalogued members";}
                         else if(a.size<=64*1024*1024){
                             auto data=sc::decode_asset(a);
                             if(auto image=sc::decode_image(a,data)){
@@ -1300,7 +1309,7 @@ public:
         SetMinSize(wxSize(960,600));paint(this);
         auto* menu=new wxMenu;
         menu->Append(open_dir,"Open game &directory...");
-        menu->Append(open_file,"Open &ISO / FS / FSU...");
+        menu->Append(open_file,"Open &ISO / INSTALL.DTA / FS / FSU...");
         menu->Append(scan_id,"&Rescan");
         menu->Append(save_manifest,"Save inventory &manifest...");
         menu->AppendSeparator();menu->Append(wxID_EXIT,"E&xit");
@@ -1309,7 +1318,7 @@ public:
         auto* root=new wxBoxSizer(wxVERTICAL);SetSizer(root);
         auto* header=new wxPanel(this);paint(header,false);auto* hs=new wxBoxSizer(wxVERTICAL);header->SetSizer(hs);
         label(header,hs,"SPELLCROSS  /  ASSET CONVERTER",true);
-        label(header,hs,"RELOADED TOOLKIT   |   v0.9.2   |   Original data inventory");
+        label(header,hs,"RELOADED TOOLKIT   |   v0.9.3   |   Original data inventory");
         root->Add(header,0,wxEXPAND);
         tabs=new wxNotebook(this,wxID_ANY);root->Add(tabs,1,wxALL|wxEXPAND,10);
         wxBoxSizer* s;
@@ -1318,7 +1327,7 @@ public:
         source_label=label(overview,s,"No source selected");
         auto* buttons=new wxBoxSizer(wxHORIZONTAL);s->Add(buttons,0,wxALL,5);
         button(overview,buttons,open_dir,"Open directory");
-        button(overview,buttons,open_file,"Open ISO / FS / FSU");
+        button(overview,buttons,open_file,"Open ISO / INSTALL.DTA / FS / FSU");
         scan_button=button(overview,buttons,scan_id,"Rescan");
         stats=label(overview,s,"Open original game data to build an inventory.");
         auto* browser=page("Asset Browser",s);
@@ -1389,7 +1398,7 @@ public:
         Bind(wxEVT_MENU,[this](wxCommandEvent&){analyze();},scan_id);
         Bind(wxEVT_MENU,[this](wxCommandEvent&){export_manifest();},save_manifest);
         Bind(wxEVT_MENU,[this](wxCommandEvent&){Close();},wxID_EXIT);
-        Bind(wxEVT_MENU,[this](wxCommandEvent&){wxMessageBox("Spellcross Asset Converter 0.9.2\nPart of Spellcross Reloaded\nMIT license\nCopyright (c) 2026 Luboš Horák\nSpellcross Reloaded by Luboš Horák; foundations by Stanislav Mašláň.\nhttps://github.com/luboshorak/spellcross-reloaded\nCAN decoder: CPAL-1.0; libsmacker: LGPL-2.1-or-later.","About",wxOK|wxICON_INFORMATION,this);},wxID_ABOUT);
+        Bind(wxEVT_MENU,[this](wxCommandEvent&){wxMessageBox("Spellcross Asset Converter 0.9.3\nPart of Spellcross Reloaded\nMIT license\nCopyright (c) 2026 Luboš Horák\nSpellcross Reloaded by Luboš Horák; foundations by Stanislav Mašláň.\nhttps://github.com/luboshorak/spellcross-reloaded\nCAN decoder: CPAL-1.0; libsmacker: LGPL-2.1-or-later.","About",wxOK|wxICON_INFORMATION,this);},wxID_ABOUT);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){choose(true);},open_dir);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){choose(false);},open_file);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){analyze();},scan_id);
