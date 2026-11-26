@@ -6,6 +6,7 @@
 #include "spellcross/campaign.hpp"
 #include "spellcross/music.hpp"
 #include "spellcross/validation.hpp"
+#include "spellcross/presentation_data.hpp"
 #include <algorithm>
 #include <chrono>
 #include <fstream>
@@ -221,6 +222,13 @@ int main(){
         auto graphics_summary=validate_package(entries,"units");require(graphics_summary.frames==1&&graphics_summary.pixels==9&&graphics_summary.png_bytes==24);
         entries["m.png"].png_width=3;bool bad_atlas=false;try{validate_package(entries,"units");}catch(const std::exception&){bad_atlas=true;}require(bad_atlas);
         bool duplicate=false;try{dataset_packages(R"({"schema":"spellcross-dataset","version":1,"version":1})");}catch(const std::exception&){duplicate=true;}require(duplicate);
-        std::cout<<"Inventory, graphics, video, atlas, semantic, campaign, music and PAK validation tests passed\n";
+        auto layout=sc::fsu_layout("ABRMS",{"A00","A01","B00","B01"});require(layout.static_slopes==2&&layout.static_azimuths==2&&layout.stat[1][1]==3);
+        layout=sc::fsu_layout("TEST",{"A00","B00","A10","B10","F00","F01"});require(layout.frames==2&&layout.animation_azimuths==2&&layout.anim[1][1]==3&&layout.stat[0][0]==4);
+        sc::Asset ui;ui.name="COMMON.FS::MAINMENU.LZ";ui.format="LZ";ui.member=true;
+        auto menu=sc::decode_image(ui,B(640*480));require(menu&&menu->width==640&&menu->height==480&&menu->opaque[0]==255);
+        ui.name="COMMON.FS::LEVEL_02.CLK";ui.format="CLK";auto clk=sc::decode_image(ui,B{1,0,3,0,6,0,2,7,1,0});require(clk&&clk->indices==B({7,7,0}));
+        ui.name="COMMON.FS::DISPLAY.PL";ui.format="PL";auto lines=sc::language_table(ui,B{';','x','\r','\n','A','\r','B',26});require(lines&&lines->size()==2&&sc::language_for(ui,"cs")=="pl");
+        require(sc::narrative_display(B{'A','~','\r','\n','B','.',26})==B({'A',' ','B','.'}));
+        std::cout<<"Inventory, graphics, video, atlas, semantic, campaign, music and presentation tests passed\n";
     }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}
 }

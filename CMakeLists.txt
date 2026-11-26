@@ -7,7 +7,7 @@ option(SC_CONVERTER_GUI "Build the desktop application" ON)
 set(RELOADED_VENDOR "${CMAKE_CURRENT_SOURCE_DIR}/vendor/reloaded")
 add_library(sc_smacker SHARED "${RELOADED_VENDOR}/third_party/libsmacker/smacker.c")
 set_target_properties(sc_smacker PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
-add_library(spellcross_converter_core src/core/inventory.cpp src/core/graphics.cpp src/core/video.cpp src/core/pack.cpp src/core/semantic.cpp src/core/campaign.cpp src/core/music.cpp src/core/validation.cpp
+add_library(spellcross_converter_core src/core/inventory.cpp src/core/graphics.cpp src/core/video.cpp src/core/pack.cpp src/core/semantic.cpp src/core/campaign.cpp src/core/music.cpp src/core/validation.cpp src/core/presentation_data.cpp
     "${RELOADED_VENDOR}/spellcross-remaster-main/source/smacker_video_decoder.cpp")
 target_include_directories(spellcross_converter_core PRIVATE "${RELOADED_VENDOR}/spellcross-remaster-main/source")
 target_link_libraries(spellcross_converter_core PRIVATE sc_smacker)

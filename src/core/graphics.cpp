@@ -372,10 +372,7 @@ std::vector<std::size_t> sprite_group_members(const Inventory& inv,const Asset& 
     for(std::size_t i=0;i<inv.assets.size();++i)
         if(sprite_group(inv.assets[i])==group && inv.assets[i].backing==a.backing)
             result.push_back(i);
-    // FSU records are catalogued by logical name; preserve original sprite
-    // table order using a stable sort only when names match (inventory order).
-    // For playback this is explicitly a name-ordered contact sequence, not
-    // inferred azimuth/animation semantics.
+    std::stable_sort(result.begin(),result.end(),[&](auto x,auto y){return inv.assets[x].source_ordinal<inv.assets[y].source_ordinal;});
     return result;
 }
 namespace {
