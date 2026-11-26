@@ -1417,7 +1417,7 @@ public:
         auto* root=new wxBoxSizer(wxVERTICAL);SetSizer(root);
         auto* header=new sc::ui::Panel(this);auto* hs=new wxBoxSizer(wxVERTICAL);header->SetSizer(hs);
         label(header,hs,"SPELLCROSS  /  ASSET CONVERTER",true);
-        label(header,hs,"RELOADED TOOLKIT   |   v0.9.7   |   Original data inventory");
+        label(header,hs,"RELOADED TOOLKIT   |   v0.9.8   |   Original data inventory");
         root->Add(header,0,wxEXPAND);
         auto* page_nav=new wxGridSizer(5,2,2);root->Add(page_nav,0,wxEXPAND|wxLEFT|wxRIGHT,8);
         tabs=new sc::ui::Book(this,this,page_nav);root->Add(tabs,1,wxALL|wxEXPAND,8);
