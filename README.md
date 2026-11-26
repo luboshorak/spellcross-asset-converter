@@ -123,3 +123,20 @@ The converter uses the Reloaded strategic UI palette, grid-painted panels and ow
 - Reject zero-height terrain headers explicitly; DMA0_270.DTA in the supplied English installation has 186 leading zero bytes and cannot be faithfully reconstructed from neighboring tiles. Original bytes remain preserved.
 - After a completed graphics audit, optionally export one `graphics-audit.zip` for all unresolved records. It contains the coverage report, source names and status, original/decoded payloads (up to 64 MiB per record), relevant palette banks, decoded lengths, and candidate indexed dimensions. Candidate dimensions are diagnostic hypotheses, not successful image conversions. No full ISO is needed for subsequent analysis of these gaps.
 - This is not a visual-parity test and does not claim complete Czech CD coverage. Remaining optional installer/media artwork and raw layouts must be verified against actual bytes before conversion.
+
+## 0.9.10 — remaining Czech retail graphic geometry
+
+The Czech ISO audit bundle from 0.9.9 reported 30,214 decoded graphics, 122 recognized non-images, 9 unknown and 2 failed records. The remaining decodable indexed images were reconstructed directly from the supplied decoded pixel arrays:
+
+| Asset | Width × height | Notes |
+|---|---|---|
+| INFO.FS INFOLSTA.LZ | 433 × 64 | Keep original 433 × 63 variant |
+| COMMON.FS DIFFIC.LZ | 249 × 180 | Localized Czech dialog; retain 249 × 152 variant |
+| COMMON.FS IL_CISLA.LZ | 40 × 7 | Digits 0–9; one trailing zero byte retained in original |
+| COMMON.FS JRC_LOGO.LZ | 640 × 480 | Matching JRC_LOGO.PAL |
+| COMMON.FS / INSTALL.FS RAM1PAT.DTA | 85 × 79 | Texture geometry inferred from row continuity in both independently indexed copies |
+| COMMON.FS RES_BAR.LZ | 260 × 16 | Reconstructed bar |
+| INSTALL.FS BAR.LZ | 320 × 38 | Reconstructed installer bar |
+| INSTALL.FS BTN_DOWN.LZ / BTN_UP.LZ | 20 × 20 | Installer buttons |
+
+All ten decodable unresolved records now have geometry rules, with synthetic regressions for their exact lengths. DMA0_270.DTA still has a zero-height header and 186 leading zero bytes in the original Czech and English sources; it remains a reported failure and is preserved byte-for-byte, not fabricated or mislabeled as valid. Expected on the same Czech ISO: 30,224 graphics, 122 non-images, zero unknown, one failed, 31,325 frames. These are predicted audit totals, not a completed full-ISO run. Installer palette bytes were absent from the diagnostic bundle; color parity (including inferred contexts for other UI graphics) is not certified. Geometry coverage is not a blocker for subsequent PAK integration; damaged sources and optional unverified assets must remain explicit in the manifest.

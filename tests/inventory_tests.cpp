@@ -407,7 +407,39 @@ int main(){
         }
         sc::Asset pattern_asset;pattern_asset.member=true;pattern_asset.format="DTA";
         pattern_asset.name="COMMON.FS::RAM1PAT.DTA";
-        require(!sc::decode_image(pattern_asset,B(6715)));
+        // Exact decoded lengths from the Czech ISO evidence bundle.
+        for(auto archive:{"COMMON.FS","INSTALL.FS"}){
+            pattern_asset.name=std::string(archive)+"::RAM1PAT.DTA";
+            auto pattern_img=sc::decode_image(pattern_asset,B(6715,106));
+            require(pattern_img&&pattern_img->width==85&&pattern_img->height==79&&pattern_img->trailing_bytes==0);
+            require(!sc::decode_image(pattern_asset,B(6714)));
+        }
+        // Verify both previously supported English and newly observed Czech
+        // layouts, and preserve the one trailing retail padding byte.
+        for(auto [name,w,h,pad]:std::vector<std::tuple<std::string,int,int,int>>{
+            {"DATA/INFO.FS::INFOLSTA.LZ",433,63,0},
+            {"DATA/INFO.FS::INFOLSTA.LZ",433,64,0},
+            {"DATA/INSTALL.DTA::DATA/COMMON.FS::DIFFIC.LZ",249,152,0},
+            {"DATA/INSTALL.DTA::DATA/COMMON.FS::DIFFIC.LZ",249,180,0},
+            {"DATA/INSTALL.DTA::DATA/COMMON.FS::IL_CISLA.LZ",40,7,1},
+            {"DATA/INSTALL.DTA::DATA/COMMON.FS::JRC_LOGO.LZ",640,480,0},
+            {"DATA/INSTALL.DTA::DATA/COMMON.FS::RES_BAR.LZ",260,16,0},
+            {"DATA/INSTALL.FS::BAR.LZ",320,38,0},
+            {"DATA/INSTALL.FS::BTN_DOWN.LZ",20,20,0},
+            {"DATA/INSTALL.FS::BTN_UP.LZ",20,20,0}}){
+            sc::Asset candidate;candidate.member=true;candidate.format="LZ";candidate.name=name;
+            B payload(w*h+pad,7);payload[0]=0;
+            auto actual=sc::decode_image(candidate,payload);
+            require(actual&&actual->width==w&&actual->height==h&&actual->trailing_bytes==std::size_t(pad));
+            require(actual->indices.size()==std::size_t(w*h)&&actual->indices[0]==0&&actual->indices.back()==7);
+        }
+        // Installer resources must not inherit the unrelated tactical bank.
+        sc::Asset installer_bar;installer_bar.member=true;installer_bar.name="DATA/INSTALL.FS::BAR.LZ";installer_bar.format="LZ";
+        auto missing_installer_palette=sc::asset_palette({},installer_bar,tactical);
+        require(!missing_installer_palette.known[7]);
+        sc::Asset logo;logo.member=true;logo.name="COMMON.FS::JRC_LOGO.LZ";logo.format="LZ";
+        fixture_bank("COMMON.FS","JRC_LOGO.PAL",256,73);
+        require(sc::asset_palette(palette_fixture,logo,tactical).rgb[0]==73);
         auto evidence=sc::graphics_evidence(B(281,0));
         require(evidence.find("decoded_bytes=281")!=std::string::npos&&
                 evidence.find("40x7+1")!=std::string::npos&&

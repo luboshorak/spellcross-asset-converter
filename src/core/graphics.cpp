@@ -173,6 +173,15 @@ struct RawUi {int w,h;bool transparent;std::string palette;};
 static std::optional<RawUi> raw_ui(const Asset& a){
     auto n=upper_name(a);
     if(in_archive(a,"INFO.FS")&&a.format=="DTA"&&n=="PATTERN.DTA")return RawUi{32,32,false,"info"};
+    // Czech CD audit: geometries reconstructed from the actual decoded
+    // pixel arrays, not from length alone. Installer and COMMON textures
+    // have the same dimensions but different palette indices.
+    if(a.format=="DTA"&&(in_archive(a,"COMMON.FS")||in_archive(a,"INSTALL.FS"))&&n=="RAM1PAT.DTA")
+        return RawUi{85,79,false,"frame"};
+    if(a.format=="LZ"&&in_archive(a,"INSTALL.FS")){
+        if(n=="BAR.LZ")return RawUi{320,38,false,"frame"};
+        if(n=="BTN_DOWN.LZ"||n=="BTN_UP.LZ")return RawUi{20,20,false,"frame"};
+    }
     // The RAM1/RAM2 frame family shares the same geometry in the
     // original COMMON.FS. Reuse it for installer copies only when the
     // decoded byte count matches the actual known frame geometry.
@@ -185,6 +194,9 @@ static std::optional<RawUi> raw_ui(const Asset& a){
     if(a.member&&!block_name(a).empty()&&!in_archive(a,"COMMON.FS"))return std::nullopt;
     // Dimensions verified by reconstructing the English retail pixel arrays.
     if(n=="DIFFIC.LZ")return RawUi{249,152,true,"MAINMENU.PAL"};
+    if(n=="IL_CISLA.LZ")return RawUi{40,7,true,"tactical"};
+    if(n=="RES_BAR.LZ")return RawUi{260,16,false,"strategy"};
+    if(n=="JRC_LOGO.LZ")return RawUi{640,480,false,"JRC_LOGO.PAL"};
     if(n=="GOTOLSTA.LZ")return RawUi{176,91,true,"tactical"};
     if(n=="LED_OFF.LZ"||n=="LED_ON.LZ")return RawUi{9,8,true,"tactical"};
     if(n=="MAINMENU.LZ"||n=="MAINMENU.BIN")return RawUi{640,480,false,"MAINMENU.PAL"};
@@ -469,6 +481,8 @@ std::optional<Sprite> decode_image(const Asset& a,std::span<const std::uint8_t> 
     if(auto ui=raw_ui(a)){
         s.width=ui->w;s.height=ui->h;opaque_zero=!ui->transparent;
         if(n=="MAINM_BG.LZ"&&d.size()>=255u*237&&d.size()<=255u*237+64)s.height=237;
+        // Retail localized difficulty dialog differs in height.
+        if(n=="DIFFIC.LZ"&&d.size()>=249u*180&&d.size()<=249u*180+2)s.height=180;
         auto expected=std::size_t(s.width)*s.height;
         if(ui->palette=="frame"&&d.size()!=expected)return std::nullopt;
         if(d.size()<expected||d.size()>expected+64)throw std::runtime_error("Unexpected known UI image size");
@@ -477,7 +491,7 @@ std::optional<Sprite> decode_image(const Asset& a,std::span<const std::uint8_t> 
         else if(n=="IBG_600.LZ"){s.width=800;s.height=600;opaque_zero=true;}
         else if(n=="NAMELSTA.LZ"){s.width=200;s.height=80;}
         else if(n=="INFOPAN.LZ"){s.width=640;s.height=480;}
-        else if(n=="INFOLSTA.LZ"){s.width=433;s.height=63;}
+        else if(n=="INFOLSTA.LZ"){s.width=433;s.height=d.size()>=433u*64&&d.size()<=433u*64+2?64:63;}
         else{s.width=437;s.height=390;opaque_zero=true;}
         const auto expected=std::size_t(s.width)*s.height;
         if(d.size()<expected||d.size()>expected+2)return std::nullopt;
