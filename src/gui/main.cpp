@@ -6,6 +6,7 @@
 #include "spellcross/campaign.hpp"
 #include "spellcross/music.hpp"
 #include "spellcross/validation.hpp"
+#include "spellcross/presentation_data.hpp"
 #include <memory>
 #include <functional>
 #include <wx/stdpaths.h>
@@ -204,6 +205,7 @@ class Frame final : public wxFrame {
     Canvas* graphic{};
     wxTextCtrl *metadata{},*raw_hex{},*text_view{},*structured_view{};
     wxChoice *block_choice{},*encoding_choice{};
+    std::string edition="unknown";
     wxButton* batch_button{};
     wxButton* modern_button{};
     wxFilePickerCtrl* ffmpeg_picker{};
@@ -284,10 +286,14 @@ class Frame final : public wxFrame {
         }
         GetSizer()->Layout();
     }
-    wxString decode_text(const sc::Bytes& data){
+    wxString decode_text(const sc::Bytes& data,const sc::Asset* asset=nullptr){
         if(data.empty())return {};
         const char* p=reinterpret_cast<const char*>(data.data());
         auto enc=encoding_choice->GetStringSelection();
+        if(enc=="Auto (retail edition)"){
+            auto lang=asset?sc::language_for(*asset,edition):edition;
+            if(lang=="cs")enc="CP895";else if(lang=="pl")enc="Windows-1250";else if(lang=="it"||lang=="en")enc="Windows-1252";else enc="Auto (UTF-8 / CP895)";
+        }
         auto utf=wxString::FromUTF8(p,data.size());
         if((enc=="Auto (UTF-8 / CP895)"||enc=="UTF-8")&&!utf.empty())return utf;
         if(enc=="UTF-8")throw std::runtime_error("Invalid UTF-8");
@@ -304,7 +310,32 @@ class Frame final : public wxFrame {
         for(auto b:data)out+=wxUniChar(static_cast<unsigned long>(b<128?b:cp[b-128]));
         return out;
     }
+    static std::string utf8_json(std::string_view s){
+        std::string out="\"";constexpr char hex[]="0123456789abcdef";
+        for(unsigned char b:s){if(b=='"'||b=='\\'){out+='\\';out+=char(b);}else if(b<32){out+="\\u00";out+=hex[b>>4];out+=hex[b&15];}else out+=char(b);}
+        return out+"\"";
+    }
+    static bool narrative(const sc::Asset& a){
+        auto b=sc::block_name(a);
+        for(auto& c:b)if(c>='a'&&c<='z')c-='a'-'A';
+        return b.ends_with("TEXTS.FS")||b.ends_with("RESEARCH.FS")||(b.ends_with("INFO.FS")&&a.format=="LST");
+    }
+    std::string localization_json(const sc::Asset& a,const std::vector<sc::Bytes>& rows){
+        std::ostringstream o;o<<"{\"schema\":\"spellcross-language-table\",\"version\":1,\"language\":"<<sc::pack::json(sc::language_for(a,edition))<<",\"entries\":[";
+        for(std::size_t i=0;i<rows.size();++i){if(i)o<<',';auto u=decode_text(rows[i],&a).utf8_str();o<<"{\"id\":"<<i<<",\"text\":"<<utf8_json(std::string_view(u.data(),u.length()))<<"}";}
+        o<<"]}\n";return o.str();
+    }
+    static std::string animation_json(const sc::AnimationLayout& layout,const std::vector<std::string>& ids){
+        using sc::pack::json;std::ostringstream o;
+        auto rows=[&](const auto& list){o<<'[';bool first=true;for(auto& row:list){if(!first)o<<',';first=false;o<<'[';for(std::size_t i=0;i<row.size();++i){if(i)o<<',';o<<json(ids.at(row[i]));}o<<']';}o<<']';};
+        o<<"{\"schema\":\"spellcross-fsu-layout\",\"version\":1,\"static_azimuths\":"<<layout.static_azimuths
+         <<",\"static_slopes\":"<<layout.static_slopes<<",\"animation_azimuths\":"<<layout.animation_azimuths
+         <<",\"animation_slopes\":"<<layout.animation_slopes<<",\"frames_per_sequence\":"<<layout.frames
+         <<",\"azimuth_zero_degrees\":90,\"azimuth_direction\":\"clockwise\",\"static_by_slope\":";
+        rows(layout.stat);o<<",\"animation_by_azimuth_or_slope\":";rows(layout.anim);o<<'}';return o.str();
+    }
     void rebuild_blocks(){
+        edition=sc::edition_language(inv);
         blocks.clear();block_keys.clear();block_choice->Clear();block_choice->Append("All game data");
         for(std::size_t i=0;i<inv.assets.size();++i)blocks[sc::block_name(inv.assets[i])].push_back(i);
         for(auto& [key,ids]:blocks){block_keys.push_back(key);block_choice->Append(key.empty()?wxString("Loose files"):w(key));}
@@ -427,7 +458,7 @@ class Frame final : public wxFrame {
                 for(int i=0;i<n;++i)image.SetRGB(wxRect(i%16*16,i/16*16,16,16),data[i*3],data[i*3+1],data[i*3+2]);
                 graphic->SetImage(image);preview_tabs->SetSelection(0);
             }else if(sc::layer_text(a,node.layers,data)){
-                text_view->SetValue(decode_text(data));preview_tabs->SetSelection(4);
+                text_view->SetValue(decode_text(data,&a));preview_tabs->SetSelection(4);
             }else preview_tabs->SetSelection(2);
         }catch(const std::exception& e){details+="\nERROR: "+w(e.what());log("LAYER: "+w(e.what()));preview_tabs->SetSelection(3);}
         metadata->SetValue(details);
@@ -462,19 +493,22 @@ class Frame final : public wxFrame {
             preview_box->SetValue(hex(data));
             auto full=data;
             if(!sc::compressed(*a)&&a->size>data.size()&&a->size<=64*1024*1024&&
-                (a->format=="ICO"||a->format=="BTN"||a->format=="CUR"||a->format=="GFK"||a->format=="DTA"||a->format=="DEF"||a->format=="TUT"||sc::is_text_asset(*a,data)))
+                (a->format=="ICO"||a->format=="BTN"||a->format=="CUR"||a->format=="GFK"||a->format=="CLK"||a->format=="BIN"||a->format=="DTA"||a->format=="DEF"||a->format=="TUT"||sc::is_text_asset(*a,data)))
                 full=sc::decode_asset(*a);
-            if(auto map=sc::tactical_map(*a,full)){
+            if(auto rows=sc::language_table(*a,full)){
+                structured_view->SetValue(w(localization_json(*a,*rows)));text_view->SetValue(decode_text(full,a));preview_tabs->SetSelection(4);
+                details+="\nPositional language entries: "+number(rows->size());
+            }else if(auto map=sc::tactical_map(*a,full)){
                 structured_view->SetValue(w(map->metadata));preview_tabs->SetSelection(5);
                 details+="\nTactical map: eight decoded layers; see Structured JSON.";
             }else if(auto units=sc::unit_definitions(*a,full)){
                 structured_view->SetValue(w(*units));preview_tabs->SetSelection(5);
                 details+="\nDecoded unit definitions (source byte strings).";
             }else if(auto script=sc::script_definition(*a,full)){
-                structured_view->SetValue(w(*script));text_view->SetValue(decode_text(full));preview_tabs->SetSelection(4);
+                structured_view->SetValue(w(*script));text_view->SetValue(decode_text(full,a));preview_tabs->SetSelection(4);
                 details+="\nOrdered script JSON is also available in Structured JSON.";
             }else if(auto table=sc::class_definition(*a,full)){
-                structured_view->SetValue(w(*table));text_view->SetValue(decode_text(full));preview_tabs->SetSelection(4);
+                structured_view->SetValue(w(*table));text_view->SetValue(decode_text(full,a));preview_tabs->SetSelection(4);
                 details+="\nClass table JSON is also available in Structured JSON.";
             }else if(auto decoded=sc::decode_image(*a,full)){
                 auto s=std::move(*decoded);
@@ -494,7 +528,7 @@ class Frame final : public wxFrame {
                 for(int i=0;i<n;++i)image.SetRGB(wxRect((i%16)*16,(i/16)*16,16,16),data[i*3],data[i*3+1],data[i*3+2]);
                 graphic->SetImage(image);preview_tabs->SetSelection(0);
             }else if(sc::is_text_asset(*a,full)&&full.size()==a->size){
-                text_view->SetValue(decode_text(full));preview_tabs->SetSelection(4);
+                text_view->SetValue(decode_text(narrative(*a)?sc::narrative_display(full):full,a));preview_tabs->SetSelection(4);
             }else if(sc::compressed(*a)){preview_tabs->SetSelection(2);}
             else{preview_tabs->SetSelection(1);}
         }catch(const std::exception& e){details+="\nERROR: "+w(e.what());log("ERROR: "+w(e.what()));preview_tabs->SetSelection(3);}
@@ -862,6 +896,7 @@ class Frame final : public wxFrame {
             std::map<std::string,std::map<std::string,std::size_t>> coverage;
             std::ostringstream root;root<<"{\n\"schema\":\"spellcross-dataset\",\"version\":1,\"partial\":"<<(partial?"true":"false")
                 <<",\"runtime_ready\":false,\"source_kind\":"<<json(inv.source_kind)
+                <<",\"edition_language\":"<<json(edition)
                 <<",\"encoding_setting\":"<<json(std::string(encoding_choice->GetStringSelection().utf8_str().data()))
                 <<",\"scan_warnings\":[";
             for(std::size_t i=0;i<inv.warnings.size();++i){if(i)root<<',';root<<json(inv.warnings[i]);}
@@ -893,6 +928,9 @@ class Frame final : public wxFrame {
                 std::vector<std::string> group_manifests;
                 std::size_t group_number=0,pack_converted=0,pack_failed=0,pack_raw=0,pack_decoded=0,pack_containers=0;
                 for(auto& [group,group_ids]:groups){
+                    const bool fsu_group=!group_ids.empty()&&inv.assets[group_ids.front()].format=="FSU-SPRITE";
+                    if(fsu_group)std::stable_sort(group_ids.begin(),group_ids.end(),[&](auto x,auto y){return inv.assets[x].source_ordinal<inv.assets[y].source_ordinal;});
+                    std::vector<std::string> converted_fsu_ids;
                     const auto prefix="graphics/"+std::to_string(group_number++)+"/";
                     sc::pack::Atlas atlas;
                     std::size_t page=0,group_frames=0;
@@ -944,7 +982,11 @@ class Frame final : public wxFrame {
                             }else if(a.size<=64u*1024u*1024u){
                                 auto data=sc::decode_asset(a);
                                 auto music=sc::music_kind(data);
-                                if(music==sc::MusicKind::midi){
+                                if(auto rows=sc::language_table(a,data)){
+                                    add_text("language.json",localization_json(a,*rows));
+                                    auto utf=decode_text(data,&a).utf8_str();add_text("source.txt",std::string(utf.data(),utf.length()));
+                                    status="converted";detail="Positional UTF-8 language table";payload=base+"language.json";
+                                }else if(music==sc::MusicKind::midi){
                                     sc::validate_midi(data);derived.emplace_back("music.mid",std::move(data));status="converted";detail="Validated standard MIDI; bytes unchanged";payload=base+"music.mid";
                                 }else if(music==sc::MusicKind::xmidi){
                                     sc::validate_xmidi(data);media.create(dest);write_bytes(media.dir/"source.xmi",data);
@@ -963,13 +1005,13 @@ class Frame final : public wxFrame {
                                     // Companion text is convenient for editing; the authoritative
                                     // syntax JSON and original source are retained independently.
                                     try{
-                                        auto utf=decode_text(data).utf8_str();
+                                        auto utf=decode_text(data,&a).utf8_str();
                                         add_text("source.txt",std::string(utf.data(),utf.length()));
                                     }catch(const std::exception& e){log("Script source text: "+w(a.name)+": "+w(e.what()));}
                                     status="converted";detail="Ordered script syntax; runtime interpretation not yet migrated";payload=base+"script.json";
                                 }else if(auto table=sc::class_definition(a,data)){
                                     add_text("classes.json",*table);
-                                    try{auto utf=decode_text(data).utf8_str();add_text("source.txt",std::string(utf.data(),utf.length()));}
+                                    try{auto utf=decode_text(data,&a).utf8_str();add_text("source.txt",std::string(utf.data(),utf.length()));}
                                     catch(const std::exception& e){log("Class source text: "+w(a.name)+": "+w(e.what()));}
                                     status="converted";detail="Ordered or ID-keyed class table with original values";payload=base+"classes.json";
                                 }else if(auto sample=sc::decode_sample(a,data)){
@@ -1001,7 +1043,7 @@ class Frame final : public wxFrame {
                                     if(images.empty())throw std::runtime_error("Empty animation");
                                 }else if(auto im=sc::decode_image(a,data))images.push_back(std::move(*im));
                                 else if(sc::is_text_asset(a,data)){
-                                    auto utf=decode_text(data).utf8_str();add_text("text.txt",std::string(utf.data(),utf.length()));
+                                    auto utf=decode_text(narrative(a)?sc::narrative_display(data):data,&a).utf8_str();add_text("text.txt",std::string(utf.data(),utf.length()));
                                     status="converted";detail="UTF-8 text";payload=base+"text.txt";
                                 }else if(a.format=="PAL"&&data.size()>=3&&data.size()<=768&&data.size()%3==0){
                                     derived.emplace_back("palette.rgb",std::move(data));status="converted";detail="Original RGB triples";payload=base+"palette.rgb";
@@ -1023,6 +1065,7 @@ class Frame final : public wxFrame {
                             }else detail="Asset exceeds conversion memory limit";
                         }catch(const std::exception& e){images.clear();derived.clear();movie_output=false;status="failed";detail=e.what();payload.clear();log("PAK: "+w(a.name)+": "+w(detail));}
                         if(!images.empty()){
+                            if(fsu_group)converted_fsu_ids.push_back(ids[i]);
                             auto frame_palette=sc::asset_palette(inv,a,palette);
                             if(font_asset){frame_palette={};frame_palette.rgb[3]=frame_palette.rgb[4]=frame_palette.rgb[5]=255;frame_palette.known[0]=frame_palette.known[1]=true;}
                             const auto palette_id=palettes.intern(frame_palette);
@@ -1069,7 +1112,16 @@ class Frame final : public wxFrame {
                             if(i)o<<',';auto base=prefix+"page-"+std::to_string(i);
                             o<<"{\"indices\":"<<json(base+"-indices.png")<<",\"opacity\":"<<json(base+"-opacity.png")<<"}";
                         }
-                        o<<"],\"frames\":[\n"<<graphic_records.str()<<"\n]}";
+                        o<<"],\"frames\":[\n"<<graphic_records.str()<<"\n]";
+                        if(fsu_group){
+                            try{
+                                if(converted_fsu_ids.size()!=group_ids.size())throw std::runtime_error("Incomplete FSU sprite conversion");
+                                std::vector<std::string> names;
+                                for(auto i:group_ids){const auto& n=inv.assets[i].name;names.push_back(n.substr(n.find_last_of('/')+1));}
+                                o<<",\"fsu_layout\":"<<animation_json(sc::fsu_layout(group,names),converted_fsu_ids);
+                            }catch(const std::exception& e){o<<",\"fsu_layout_error\":"<<json(e.what());log("FSU layout: "+w(group)+": "+w(e.what()));}
+                        }
+                        o<<'}';
                         pak_string(zip,w(meta),o.str());group_manifests.push_back(meta);
                     }
                 }
@@ -1157,7 +1209,7 @@ class Frame final : public wxFrame {
                                 add_text("sprite.json",sc::sprite_metadata(a,*image,p));
                                 status="converted";detail="Indexed image and metadata";
                             }else if(sc::is_text_asset(a,data)){
-                                auto utf=decode_text(data).utf8_str();
+                                auto utf=decode_text(data,&a).utf8_str();
                                 add_text("text.txt",std::string(utf.data(),utf.length()));
                                 status="converted";detail="UTF-8 text";
                             }else if(a.format=="PAL"&&data.size()>=3&&data.size()<=768&&data.size()%3==0){
@@ -1256,7 +1308,7 @@ public:
         auto* root=new wxBoxSizer(wxVERTICAL);SetSizer(root);
         auto* header=new wxPanel(this);paint(header,false);auto* hs=new wxBoxSizer(wxVERTICAL);header->SetSizer(hs);
         label(header,hs,"SPELLCROSS  /  ASSET CONVERTER",true);
-        label(header,hs,"RELOADED TOOLKIT   |   v0.9.1   |   Original data inventory");
+        label(header,hs,"RELOADED TOOLKIT   |   v0.9.2   |   Original data inventory");
         root->Add(header,0,wxEXPAND);
         tabs=new wxNotebook(this,wxID_ANY);root->Add(tabs,1,wxALL|wxEXPAND,10);
         wxBoxSizer* s;
@@ -1300,7 +1352,7 @@ public:
             paint(p,false);p->SetFont(wxFontInfo(10).Family(wxFONTFAMILY_TELETYPE));preview_tabs->AddPage(p,title);return p;
         };
         raw_hex=text_page("Stored HEX");preview_box=text_page("Decoded HEX");metadata=text_page("Metadata");text_view=text_page("Text");structured_view=text_page("Structured JSON");
-        encoding_choice=new wxChoice(right,wxID_ANY);for(auto enc:{"Auto (UTF-8 / CP895)","UTF-8","CP895","CP852","Windows-1250","Windows-1252"})encoding_choice->Append(enc);
+        encoding_choice=new wxChoice(right,wxID_ANY);for(auto enc:{"Auto (retail edition)","Auto (UTF-8 / CP895)","UTF-8","CP895","CP852","Windows-1250","Windows-1252"})encoding_choice->Append(enc);
         encoding_choice->SetSelection(0);rs->Add(encoding_choice,0,wxEXPAND|wxLEFT|wxRIGHT,6);
         encoding_choice->Bind(wxEVT_CHOICE,[this](wxCommandEvent&){show_preview();});
         auto* actions=new wxFlexGridSizer(2,2,2,2);rs->Add(actions,0,wxALL,2);
@@ -1336,7 +1388,7 @@ public:
         Bind(wxEVT_MENU,[this](wxCommandEvent&){analyze();},scan_id);
         Bind(wxEVT_MENU,[this](wxCommandEvent&){export_manifest();},save_manifest);
         Bind(wxEVT_MENU,[this](wxCommandEvent&){Close();},wxID_EXIT);
-        Bind(wxEVT_MENU,[this](wxCommandEvent&){wxMessageBox("Spellcross Asset Converter 0.9.1\nPart of Spellcross Reloaded\nMIT license\nCopyright (c) 2026 Luboš Horák\nSpellcross Reloaded by Luboš Horák; foundations by Stanislav Mašláň.\nhttps://github.com/luboshorak/spellcross-reloaded\nCAN decoder: CPAL-1.0; libsmacker: LGPL-2.1-or-later.","About",wxOK|wxICON_INFORMATION,this);},wxID_ABOUT);
+        Bind(wxEVT_MENU,[this](wxCommandEvent&){wxMessageBox("Spellcross Asset Converter 0.9.2\nPart of Spellcross Reloaded\nMIT license\nCopyright (c) 2026 Luboš Horák\nSpellcross Reloaded by Luboš Horák; foundations by Stanislav Mašláň.\nhttps://github.com/luboshorak/spellcross-reloaded\nCAN decoder: CPAL-1.0; libsmacker: LGPL-2.1-or-later.","About",wxOK|wxICON_INFORMATION,this);},wxID_ABOUT);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){choose(true);},open_dir);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){choose(false);},open_file);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){analyze();},scan_id);

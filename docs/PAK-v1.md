@@ -53,3 +53,7 @@ Music payload music.mid is Standard MIDI (validated original or XMIDI converted 
 ### Read-back validation (0.9.1)
 
 Generated PAKs must pass ZIP CRC and length checks, manifest/schema and internal reference checks, PNG plane validation and aggregate record/atlas accounting. Validation does not imply runtime_ready, original-source identity, or resolved gameplay references. CRC32 detects accidental corruption, not deliberate tampering. External datasets can be checked without modifying them.
+
+### FSU layout and language extensions (0.9.2)
+
+`fsu_layout` inside atlas JSON identifies source-order static rows by slope/azimuth and animated rows by azimuth or (DPEKJ) slope, with logical record IDs, original grouping counts and 90-degree clockwise azimuth convention. It is not a timing or fire-origin table. Incomplete groups report `fsu_layout_error`. Language table JSON contains explicit zero-based entry IDs, UTF-8 text and language; original table bytes retained. Narrative UTF-8 follows SR display normalization, not a byte-identical transcription. CLK atlas planes encode territory IDs rather than RGB colors.

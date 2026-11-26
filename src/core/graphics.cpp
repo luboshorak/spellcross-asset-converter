@@ -305,6 +305,7 @@ std::optional<Sprite> decode_image(const Asset& a,std::span<const std::uint8_t> 
     auto n=upper_name(a);
     if(auto ui=raw_ui(a)){
         s.width=ui->w;s.height=ui->h;opaque_zero=!ui->transparent;
+        if(n=="MAINM_BG.LZ"&&d.size()>=255u*237&&d.size()<=255u*237+64)s.height=237;
         auto expected=std::size_t(s.width)*s.height;
         if(d.size()<expected||d.size()>expected+64)throw std::runtime_error("Unexpected known UI image size");
     }else if(in_archive(a,"INFO.FS")&&a.format=="LZ"){
