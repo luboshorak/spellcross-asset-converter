@@ -1345,14 +1345,28 @@ class Frame final : public wxFrame {
             ++checked;
         }
         progress.Update(static_cast<int>(ids.size()));
-        Counts total;wxString report="Graphics coverage audit (decoded geometry, not visual parity)\n";
-        report+="Format | graphics | other | unknown | failed | frames\n";
+        Counts total;std::ostringstream report_stream;
+        auto report_row=[&](const std::string& fmt,const Counts& c){
+            report_stream<<std::left<<std::setw(13)<<fmt<<std::right
+                <<std::setw(11)<<c.graphics<<std::setw(9)<<c.other<<std::setw(10)<<c.unknown
+                <<std::setw(9)<<c.failed<<std::setw(11)<<c.frames<<'\n';
+        };
         for(auto& [fmt,c]:by_format){
-            report+=w(fmt)+" | "+number(c.graphics)+" | "+number(c.other)+" | "+number(c.unknown)+" | "+number(c.failed)+" | "+number(c.frames)+"\n";
             total.graphics+=c.graphics;total.other+=c.other;total.unknown+=c.unknown;total.failed+=c.failed;total.frames+=c.frames;
         }
-        report+="TOTAL | "+number(total.graphics)+" | "+number(total.other)+" | "+number(total.unknown)+" | "+number(total.failed)+" | "+number(total.frames)+"\n";
-        report+=number(checked)+" / "+number(ids.size())+" candidates checked; "+number(inv.warnings.size())+" scan warnings."+(cancelled?wxString("\nCancelled."):wxString());
+        report_stream<<"GRAPHICS COVERAGE AUDIT\n\n"
+            <<"Decoded graphics: "<<total.graphics<<"\n"
+            <<"Recognized non-images: "<<total.other<<"\n"
+            <<"Unknown: "<<total.unknown<<"   Failed: "<<total.failed<<"\n"
+            <<"Decoded frames: "<<total.frames<<"\n"
+            <<"Checked: "<<checked<<" / "<<ids.size()<<"   Scan warnings: "<<inv.warnings.size()<<"\n\n"
+            <<"Format          Graphics    Other   Unknown   Failed     Frames\n"
+            <<std::string(63,'-')<<'\n';
+        for(auto& [fmt,c]:by_format)report_row(fmt,c);
+        report_stream<<std::string(63,'-')<<'\n';report_row("TOTAL",total);
+        report_stream<<"\nGeometry/decode audit, not visual parity. See Log for unknown and failed names.\n";
+        if(cancelled)report_stream<<"Cancelled; unchecked items are excluded from counts.\n";
+        auto report=w(report_stream.str());
         validation->ChangeValue(report);log(report);
     }
     void export_assets(bool all) {
@@ -1405,7 +1419,7 @@ public:
         label(header,hs,"SPELLCROSS  /  ASSET CONVERTER",true);
         label(header,hs,"RELOADED TOOLKIT   |   v0.9.7   |   Original data inventory");
         root->Add(header,0,wxEXPAND);
-        auto* page_nav=new wxBoxSizer(wxHORIZONTAL);root->Add(page_nav,0,wxEXPAND|wxLEFT|wxRIGHT,8);
+        auto* page_nav=new wxGridSizer(5,2,2);root->Add(page_nav,0,wxEXPAND|wxLEFT|wxRIGHT,8);
         tabs=new sc::ui::Book(this,this,page_nav);root->Add(tabs,1,wxALL|wxEXPAND,8);
         wxBoxSizer* s;
         auto* overview=page("Overview",s);
