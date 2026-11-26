@@ -6,6 +6,7 @@
 #include "spellcross/campaign.hpp"
 #include "spellcross/music.hpp"
 #include "spellcross/validation.hpp"
+#include "pak_io.hpp"
 #include "spellcross/presentation_data.hpp"
 #include <memory>
 #include <functional>
@@ -826,79 +827,19 @@ class Frame final : public wxFrame {
         if(pcm)meta<<",\"sample_rate\":"<<pcm->rate<<",\"channels\":"<<pcm->channels<<",\"sample_frames\":"<<pcm->samples.size()/pcm->channels;
         meta<<"}\n";return meta.str();
     }
-    static sc::validation::Entries read_pak(const std::filesystem::path& filename){
-        using namespace sc::validation;
-        if(!std::filesystem::is_regular_file(filename)||std::filesystem::is_symlink(filename))
-            throw std::runtime_error("Missing or nonregular PAK file");
-        wxFFileInputStream file(w(sc::utf8(filename)));
-        if(!file.IsOk())throw std::runtime_error("Cannot open PAK");
-        wxZipInputStream zip(file);
-        Entries result;
-        std::uint64_t total=0,json_total=0;
-        std::array<unsigned char,65536> buffer{};
-        while(auto item=std::unique_ptr<wxZipEntry>(zip.GetNextEntry())){
-            if(result.size()>=300000)throw std::runtime_error("PAK entry count limit");
-            auto utf=item->GetName().utf8_str();
-            std::string name(utf.data(),utf.length());
-            if(item->IsDir()||!safe_entry(name)||result.contains(name))
-                throw std::runtime_error("Unsafe or duplicate PAK entry: "+name);
-            const bool json=name.ends_with(".json");
-            const bool png=name.ends_with(".png")&&name.starts_with("graphics/");
-            const std::uint64_t cap=json||png?64ull*1024*1024:8ull*1024*1024*1024;
-            sc::Bytes image;
-            Entry e;std::uint32_t crc=0xffffffffu;
-            for(;;){
-                zip.Read(buffer.data(),buffer.size());auto n=zip.LastRead();
-                if(n>cap-e.size||n>32ull*1024*1024*1024-total)
-                    throw std::runtime_error("PAK read limit exceeded: "+name);
-                crc=crc32_update(crc,buffer.data(),n);
-                e.size+=n;total+=n;
-                if(json){
-                    if(n>256ull*1024*1024-json_total)throw std::runtime_error("PAK metadata limit exceeded");
-                    json_total+=n;e.json.append(reinterpret_cast<const char*>(buffer.data()),n);
-                }else if(png)image.insert(image.end(),buffer.begin(),buffer.begin()+n);
-                if(zip.GetLastError()==wxSTREAM_EOF)break;
-                if(zip.GetLastError()!=wxSTREAM_NO_ERROR||!n)
-                    throw std::runtime_error("ZIP read error: "+name);
-            }
-            if(item->GetSize()<0||static_cast<std::uint64_t>(item->GetSize())!=e.size||
-                item->GetCrc()!=(crc^0xffffffffu))
-                throw std::runtime_error("ZIP length or CRC mismatch: "+name);
-            if(png){
-                // Validate dimensions before wxImage allocates decoded pixels.
-                const unsigned char signature[]={137,80,78,71,13,10,26,10};
-                if(image.size()<33||!std::equal(std::begin(signature),std::end(signature),image.begin())||
-                   !std::equal(image.begin()+12,image.begin()+16,"IHDR"))
-                    throw std::runtime_error("Invalid atlas PNG header: "+name);
-                auto be=[&](int p){return std::uint32_t(image[p])<<24|std::uint32_t(image[p+1])<<16|std::uint32_t(image[p+2])<<8|image[p+3];};
-                auto width=be(16),height=be(20);
-                if(!width||!height||width>2048||height>2048||image[24]!=8)
-                    throw std::runtime_error("Invalid atlas PNG dimensions or bit depth: "+name);
-                wxMemoryInputStream input(image.data(),image.size());wxImage decoded;
-                if(!decoded.LoadFile(input,wxBITMAP_TYPE_PNG)||decoded.GetWidth()!=int(width)||decoded.GetHeight()!=int(height)||decoded.HasAlpha())
-                    throw std::runtime_error("Invalid atlas data plane: "+name);
-                auto rgb=decoded.GetData();
-                for(std::size_t p=0;p<std::size_t(width)*height;++p)
-                    if(rgb[p*3]!=rgb[p*3+1]||rgb[p*3]!=rgb[p*3+2])
-                        throw std::runtime_error("Non-grayscale atlas plane: "+name);
-                e.png_width=width;e.png_height=height;
-            }
-            result.emplace(std::move(name),std::move(e));
-        }
-        if(zip.GetLastError()!=wxSTREAM_EOF)throw std::runtime_error("Invalid ZIP end");
-        return result;
-    }
     static sc::validation::AuditReport check_dataset(const std::filesystem::path& dir,
                                      const std::function<bool(const std::string&)>& progress,
                                      const std::vector<sc::validation::SourceRecord>* expected_source=nullptr){
         using namespace sc::validation;
+        if(!std::filesystem::is_regular_file(dir/"manifest.json"))
+            throw std::runtime_error("Dataset manifest.json missing. Select the manifest inside the completed Spellcross-PAK export directory.");
         auto raw=read_media(dir/"manifest.json",64u*1024u*1024u);
         std::string root(raw.begin(),raw.end());
         auto packages=dataset_packages(root);
         std::map<std::string,PackageSummary> summaries;
         for(auto& package:packages){
             if(!progress(package.file))throw std::runtime_error("Validation cancelled");
-            auto contents=read_pak(dir/package.file);
+            auto contents=sc::pak_io::read_pak(dir/package.file);
             try{
                 auto summary=validate_package(contents,package.category);
                 summary.archive_bytes=std::filesystem::file_size(dir/package.file);
@@ -908,11 +849,12 @@ class Frame final : public wxFrame {
         return audit_report(root,summaries,expected_source);
     }
     void validate_pak(){
-        stop_play();wxDirDialog d(this,"Choose modern PAK dataset directory");
+        stop_play();wxFileDialog d(this,"Select manifest.json inside a completed Spellcross-PAK dataset",
+            wxEmptyString,"manifest.json","Dataset manifest (manifest.json)|manifest.json",wxFD_OPEN|wxFD_FILE_MUST_EXIST);
         if(d.ShowModal()!=wxID_OK)return;
         try{
             wxProgressDialog progress("Validate PAK","Reading dataset...",100,this,wxPD_APP_MODAL|wxPD_CAN_ABORT|wxPD_AUTO_HIDE);
-            auto result=check_dataset(path(d.GetPath()),[&](const std::string& p){return progress.Pulse(w(p));});
+            auto result=check_dataset(path(d.GetPath()).parent_path(),[&](const std::string& p){return progress.Pulse(w(p));});
             progress.Update(100);progress.Hide();
             validation->ChangeValue(w(result.summary));log(w(result.summary));
             if(wxMessageBox("Structural validation passed. See the Validation tab for coverage and remaining work.\n\nSave the complete per-record audit?",
@@ -1592,7 +1534,7 @@ public:
         Bind(wxEVT_MENU,[this](wxCommandEvent&){analyze();},scan_id);
         Bind(wxEVT_MENU,[this](wxCommandEvent&){export_manifest();},save_manifest);
         Bind(wxEVT_MENU,[this](wxCommandEvent&){Close();},wxID_EXIT);
-        Bind(wxEVT_MENU,[this](wxCommandEvent&){wxMessageBox("Spellcross Asset Converter 0.9.11\nPart of Spellcross Reloaded\nMIT license\nCopyright (c) 2026 Luboš Horák\nSpellcross Reloaded by Luboš Horák; foundations by Stanislav Mašláň.\nhttps://github.com/luboshorak/spellcross-reloaded\nCAN decoder: CPAL-1.0; libsmacker: LGPL-2.1-or-later.","About",wxOK|wxICON_INFORMATION,this);},wxID_ABOUT);
+        Bind(wxEVT_MENU,[this](wxCommandEvent&){wxMessageBox("Spellcross Asset Converter 0.9.11.1\nPart of Spellcross Reloaded\nMIT license\nCopyright (c) 2026 Luboš Horák\nSpellcross Reloaded by Luboš Horák; foundations by Stanislav Mašláň.\nhttps://github.com/luboshorak/spellcross-reloaded\nCAN decoder: CPAL-1.0; libsmacker: LGPL-2.1-or-later.","About",wxOK|wxICON_INFORMATION,this);},wxID_ABOUT);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){choose(true);},open_dir);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){choose(false);},open_file);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){analyze();},scan_id);
