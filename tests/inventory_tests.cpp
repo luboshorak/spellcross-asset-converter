@@ -358,6 +358,40 @@ int main(){
         auto graphics_summary=validate_package(entries,"units");require(graphics_summary.frames==1&&graphics_summary.pixels==9&&graphics_summary.png_bytes==24);
         require(graphics_summary.audit_records.at(0).assessment=="semantic-review"&&
                 graphics_summary.audit_records.at(0).notes=="Missing FSU layout");
+        // Small retail table fixtures: preserve exact bit positions and values.
+        sc::Asset table_asset;table_asset.member=true;table_asset.name="COMMON.FS::LEVEL_02.SSD";table_asset.format="SSD";
+        B adjacency(128);le(adjacency,4,0x8000001cu);
+        auto table=sc::retail_table(table_asset,adjacency);
+        require(table&&table->kind=="territory-adjacency"&&table->json.find("[2,3,4,31]")!=std::string::npos);
+        table_asset.name="COMMON.FS::GAMMA.TBL";table_asset.format="TBL";
+        B gamma(704);for(std::size_t k=0;k<gamma.size();++k)gamma[k]=k%64;
+        require(sc::retail_table(table_asset,gamma)->kind=="gamma-table");
+        table_asset.name="COMMON.FS::_BUY.PAL";table_asset.format="PAL";
+        require(sc::retail_table(table_asset,B{13,10})->kind=="empty-palette");
+        require(!sc::retail_table(table_asset,B{1,2}));
+        table_asset.name="T11.FS::MAPCOLOR.COL";table_asset.format="COL";
+        require(sc::retail_table(table_asset,B(11))->kind=="terrain-color-indices");
+        table_asset.name="INFO.FS::PALETA.DRK";table_asset.format="DRK";
+        require(sc::retail_table(table_asset,B(256))->kind=="info-index-filter");
+        auto info_filter=sc::retail_table(table_asset,B(256));
+        Entries retail_entries;
+        retail_entries["original.bin"].size=256;
+        retail_entries["records/1/retail-table.json"].json=info_filter->json;
+        retail_entries["records/1/retail-table.json"].size=info_filter->json.size();
+        retail_entries["manifest.json"].json=R"({"schema":"spellcross-pak","version":1,"category":"info","partial":false,"records":[{"id":"a#1","name":"INFO.FS::PALETA.DRK","format":"DRK","status":"converted","original":{"entry":"original.bin","offset":0,"size":256},"payload":"records/1/retail-table.json"}],"graphics":[],"palettes":[]})";
+        require(validate_package(retail_entries,"info").audit_records.at(0).kind=="info-index-filter");
+        auto bad_filter=info_filter->json;auto role_pos=bad_filter.find("\"dark\"");bad_filter.replace(role_pos,6,"\"light\"");
+        retail_entries["records/1/retail-table.json"].json=bad_filter;
+        bool bad_role=false;try{validate_package(retail_entries,"info");}catch(const std::exception&){bad_role=true;}require(bad_role);
+        sc::Asset dos;dos.name="DATA/INSTALL.DTA::DRIVERS/ADLIB.MDI";dos.format="MDI";dos.member=true;
+        require(sc::legacy_support_asset(dos));
+        dos.name="DATA/INSTALL.FS::MSG0000";dos.format="UNKNOWN";require(sc::legacy_support_asset(dos));
+        dos.name="COMMON.FS::MSG0000";require(!sc::legacy_support_asset(dos));
+        dos.name="MOVIE.FS::TEMP.DPK";dos.format="DPK";require(!sc::legacy_support_asset(dos));
+        Entries legacy_entries;
+        legacy_entries["original.bin"].size=42;
+        legacy_entries["manifest.json"].json=R"({"schema":"spellcross-pak","version":1,"category":"other","partial":false,"records":[{"id":"a#1","name":"DATA/INSTALL.FS::MSG0000","format":"UNKNOWN","status":"raw","role":"legacy-only","original":{"entry":"original.bin","offset":0,"size":42}}],"graphics":[],"palettes":[]})";
+        require(validate_package(legacy_entries,"other").audit_records.at(0).assessment=="legacy-only");
         // Failed retail terrain remains failed, but has a renderable sentinel.
         sc::Asset damaged;damaged.name="DATA/DEVAST.FS::DMA0_270.DTA";damaged.format="DTA";damaged.member=true;
         B damaged_bytes(2248);damaged_bytes[186]=42;
@@ -373,7 +407,7 @@ int main(){
         placeholder_entries["manifest.json"].json=R"({"schema":"spellcross-pak","version":1,"category":"terrain","partial":false,"records":[{"id":"bad#1","name":"DEVAST.FS::DMA0_270.DTA","format":"DTA","status":"failed","original":{"entry":"original.bin","offset":0,"size":2248},"payload":"frames.json"}],"graphics":["frames.json"],"palettes":[{"rgb":"palette.rgb","known":"palette.known"}]})";
         placeholder_entries["frames.json"].json=R"({"schema":"spellcross-atlas","version":1,"group":"terrain","pages":[{"indices":"i.png","opacity":"m.png"}],"frames":[{"id":"bad#1","frame":0,"page":0,"rect":[0,0,80,1],"origin":[0,0],"palette":0,"synthetic_placeholder":true}]})";
         auto placeholder_summary=validate_package(placeholder_entries,"terrain");
-        require(placeholder_summary.counts.at("failed")==1&&placeholder_summary.audit_records.at(0).kind=="synthetic-placeholder"&&placeholder_summary.audit_records.at(0).assessment=="legacy-required");
+        require(placeholder_summary.counts.at("failed")==1&&placeholder_summary.audit_records.at(0).kind=="synthetic-placeholder"&&placeholder_summary.audit_records.at(0).assessment=="placeholder");
         auto& placeholder_meta=placeholder_entries["frames.json"].json;
         auto marker_pos=placeholder_meta.find(",\"synthetic_placeholder\":true");
         placeholder_meta.erase(marker_pos,std::string(",\"synthetic_placeholder\":true").size());
