@@ -327,11 +327,27 @@ int main(){
             const std::string magic="SpellFSUcontextV1.0";
             B fsa(magic.begin(),magic.end());fsa.push_back(0);
             auto add32=[&](std::uint32_t n){auto p=fsa.size();fsa.resize(p+4);le(fsa,p,n);};
-            add32(1);fsa.push_back(4);fsa.push_back(0);fsa.insert(fsa.end(),{'T','E','S','T'});
+            add32(1);fsa.push_back(5);fsa.push_back(0);fsa.insert(fsa.end(),{'T','E','S','T',0});
             add32(1);add32(1);add32(0xfffffffeu);add32(3);add32(4);add32(5);
             add32(0);add32(6);add32(7);
             auto context_json=sc::fsu_context(fsa_asset,fsa);
             require(context_json&&context_json->find("[-2,3]")!=std::string::npos);
+            require(context_json->find("\"group\":\"TEST\"")!=std::string::npos);
+            const auto name_start=magic.size()+1+4+2;
+            auto old_fsa=fsa;old_fsa[name_start-2]=4;
+            old_fsa.erase(old_fsa.begin()+name_start+4);
+            require(sc::fsu_context(fsa_asset,old_fsa)==context_json);
+            auto reject_fsa=[&](const B& bytes){
+                bool rejected=false;try{sc::fsu_context(fsa_asset,bytes);}catch(const std::exception&){rejected=true;}require(rejected);
+            };
+            auto bad_name=fsa;bad_name[name_start+1]=0;reject_fsa(bad_name);
+            bad_name=fsa;bad_name[name_start+3]=0;reject_fsa(bad_name);
+            bad_name=fsa;bad_name[name_start-2]=1;
+            bad_name[name_start]=0;bad_name.erase(bad_name.begin()+name_start+1,bad_name.begin()+name_start+5);reject_fsa(bad_name);
+            auto duplicate=fsa;duplicate[magic.size()+1]=2;
+            B duplicate_name{5,0,'t','e','s','t',0};
+            duplicate.insert(duplicate.begin()+name_start+5,duplicate_name.begin(),duplicate_name.end());
+            reject_fsa(duplicate);
             Entries fsa_entries;
             fsa_entries["original.bin"].size=fsa.size();
             fsa_entries["records/1/fsu-context.json"].json=*context_json;
@@ -339,6 +355,15 @@ int main(){
             fsa_entries["manifest.json"].json="{\"schema\":\"spellcross-pak\",\"version\":1,\"category\":\"other\",\"partial\":false,\"records\":[{\"id\":\"fsa#1\",\"name\":\"units.fsa\",\"format\":\"FSA\",\"status\":\"converted\",\"original\":{\"entry\":\"original.bin\",\"offset\":0,\"size\":"+std::to_string(fsa.size())+"},\"payload\":\"records/1/fsu-context.json\"}],\"graphics\":[],\"palettes\":[]}";
             auto fsa_summary=validate_package(fsa_entries,"other");
             require(fsa_summary.fsu_contexts.size()==1&&fsa_summary.fsu_contexts[0].static_azimuths==std::vector<std::uint64_t>{1});
+            require(fsa_summary.fsu_contexts[0].origin_count==1&&fsa_summary.fsu_contexts[0].zero_origins==0);
+            require(fsa_summary.fsu_contexts[0].center_count==2&&fsa_summary.fsu_contexts[0].zero_centers==0);
+            auto zero_context=*context_json;
+            const auto origin_pos=zero_context.find("[-2,3]");require(origin_pos!=std::string::npos);
+            zero_context.replace(origin_pos,6,"[0,0]");
+            fsa_entries["records/1/fsu-context.json"].json=zero_context;
+            fsa_entries["records/1/fsu-context.json"].size=zero_context.size();
+            auto zero_summary=validate_package(fsa_entries,"other");
+            require(zero_summary.fsu_contexts[0].zero_origins==1&&zero_summary.metadata_coverage.at("fsu-context-groups-without-nonzero-origins")==1);
             fsa.pop_back();bool truncated_fsa=false;try{sc::fsu_context(fsa_asset,fsa);}catch(const std::exception&){truncated_fsa=true;}require(truncated_fsa);
 
             // Map tile plane indices are actually validated on read-back.

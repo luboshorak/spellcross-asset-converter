@@ -202,7 +202,11 @@ std::optional<std::string> fsu_context(const Asset& a,Span d){
     for(unsigned i=0;i<n;++i){
         auto len=read16();if(!len||len>64)throw std::runtime_error("Invalid FSA resource name");
         check(d,p,len);std::string name(d.begin()+p,d.begin()+p+len);p+=len;
-        if(std::any_of(name.begin(),name.end(),[](unsigned char c){return c<32||c>=127;})||!seen.insert(upper(name)).second)
+        // The editor's p16 string length includes its terminating NUL.
+        // Also accept earlier non-terminated fixtures/exports. Never strip
+        // embedded NULs or multiple terminators, and check normalized IDs.
+        if(!name.empty()&&name.back()=='\0')name.pop_back();
+        if(name.empty()||std::any_of(name.begin(),name.end(),[](unsigned char c){return c<32||c>=127;})||!seen.insert(upper(name)).second)
             throw std::runtime_error("Invalid or duplicate FSA resource name");
         names.push_back(std::move(name));
     }

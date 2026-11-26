@@ -566,25 +566,37 @@ PackageSummary validate_package(const Entries& entries,std::string_view expected
                     auto result=std::from_chars(str.data(),str.data()+str.size(),v);
                     if(result.ec!=std::errc{}||result.ptr!=str.data()+str.size())fail("Invalid FSA coordinate range");
                 };
-                auto point=[&](const J& j){auto& a=j.arr();if(a.size()!=2)fail("Invalid FSA coordinate pair");for(const auto& c:a)signed32(c);};
+                auto point=[&](const J& j){
+                    auto& a=j.arr();if(a.size()!=2)fail("Invalid FSA coordinate pair");
+                    bool zero=true;for(const auto& c:a){signed32(c);auto& n=std::get<J::N>(c.v).value;zero=zero&&(n=="0"||n=="-0");}
+                    return zero;
+                };
                 std::set<std::string> groups;
                 for(const auto& context:meta.at("resources").arr()){
                     auto name=context.at("group").str();
                     if(name.empty()||!groups.insert(game_upper(name)).second)fail("Invalid FSA group");
                     FsuContextRecord value{row.id,name,{},0};
+                    auto origin=[&](const J& j){++value.origin_count;if(point(j))++value.zero_origins;};
+                    auto center=[&](const J& j){++value.center_count;if(point(j))++value.zero_centers;};
                     const auto& slopes=context.at("static").arr();if(slopes.size()>13)fail("Invalid FSA slope count");
                     for(const auto& slope:slopes){
                         auto& origins=slope.at("fire_origins").arr();if(origins.size()>256)fail("Invalid FSA azimuth count");
-                        for(const auto& origin:origins)point(origin);
-                        point(slope.at("fire_center"));value.static_azimuths.push_back(origins.size());
+                        for(const auto& coord:origins)origin(coord);
+                        center(slope.at("fire_center"));value.static_azimuths.push_back(origins.size());
                     }
                     const auto& anim=context.at("animation");auto& origins=anim.at("fire_origins").arr();
                     if(origins.size()>256)fail("Invalid FSA animation count");
-                    for(const auto& origin:origins)point(origin);point(anim.at("fire_center"));
+                    for(const auto& coord:origins)origin(coord);center(anim.at("fire_center"));
                     value.animation_origins=origins.size();
+                    out.metadata_coverage["fsu-context-origin-count"]+=value.origin_count;
+                    out.metadata_coverage["fsu-context-zero-origins"]+=value.zero_origins;
+                    out.metadata_coverage["fsu-context-center-count"]+=value.center_count;
+                    out.metadata_coverage["fsu-context-zero-centers"]+=value.zero_centers;
+                    if(value.origin_count==value.zero_origins)++out.metadata_coverage["fsu-context-groups-without-nonzero-origins"];
+                    else ++out.metadata_coverage["fsu-context-groups-with-nonzero-origins"];
                     out.fsu_contexts.push_back(std::move(value));++out.metadata_coverage["supplied-fsu-context-groups"];
                 }
-                row.kind="fsu-context";row.notes="Explicit supplied editor context; group shape audited";
+                row.kind="fsu-context";row.notes="Editor-supplied reference, not original DOS coordinates; shape and zero/nonzero coverage audited";
             }
             else if(p.ends_with("/language.json")){row.kind="language-table";row.notes="Entry IDs and encoding parity need review";}
             else{row.kind="other-json";row.notes="Payload schema and semantics need review";}
@@ -963,7 +975,16 @@ static GameAudit game_audit(std::string_view root,const std::map<std::string,Pac
         if(!first)json<<',';first=false;
         json<<"{\"package\":"<<catalog_quote(file)<<",\"group\":"<<catalog_quote(g->group)
             <<",\"atlas\":"<<catalog_quote(g->entry)<<",\"fire_context\":"<<catalog_quote(state)
-            <<",\"animation_timing\":\"unverified\"}";
+            <<",\"animation_timing\":\"unverified\"";
+        if(it!=context_index.end()&&it->second.size()==1){
+            auto c=it->second.front();
+            json<<",\"context_source\":"<<catalog_quote(c->source)
+                <<",\"context_provenance\":\"editor-supplied\""
+                <<",\"original_coordinate_parity\":\"unverified\""
+                <<",\"origin_count\":"<<c->origin_count<<",\"zero_origins\":"<<c->zero_origins
+                <<",\"center_count\":"<<c->center_count<<",\"zero_centers\":"<<c->zero_centers;
+        }
+        json<<'}';
     }
     json<<"],\"coverage\":";json_counts(json,coverage);
     json<<",\"unreviewed_commands\":";json_counts(json,unknown);
