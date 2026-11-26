@@ -20,7 +20,7 @@ inline sc::validation::Entries read_pak(const std::filesystem::path& filename){
     if(!file.IsOk())throw std::runtime_error("Cannot open PAK");
     wxZipInputStream zip(file);
     Entries result;
-    std::uint64_t total=0,json_total=0;
+    std::uint64_t total=0,json_total=0,tile_total=0;
     std::array<unsigned char,65536> buffer{};
     while(auto item=std::unique_ptr<wxZipEntry>(zip.GetNextEntry())){
         if(result.size()>=300000)throw std::runtime_error("PAK entry count limit");
@@ -33,7 +33,8 @@ inline sc::validation::Entries read_pak(const std::filesystem::path& filename){
             throw std::runtime_error("Unsafe or duplicate PAK entry: "+name);
         const bool json=name.ends_with(".json");
         const bool png=name.ends_with(".png")&&name.starts_with("graphics/");
-        const std::uint64_t cap=json||png?64ull*1024*1024:8ull*1024*1024*1024;
+        const bool tiles=name.starts_with("records/")&&(name.ends_with("/ground.u16le")||name.ends_with("/objects.u8x2"));
+        const std::uint64_t cap=tiles?2000000ull:json||png?64ull*1024*1024:8ull*1024*1024*1024;
         sc::Bytes image;
         Entry e;std::uint32_t crc=0xffffffffu;
         for(;;){
@@ -46,6 +47,10 @@ inline sc::validation::Entries read_pak(const std::filesystem::path& filename){
                 if(n>256ull*1024*1024-json_total)throw std::runtime_error("PAK metadata limit exceeded");
                 json_total+=n;e.json.append(reinterpret_cast<const char*>(buffer.data()),n);
             }else if(png)image.insert(image.end(),buffer.begin(),buffer.begin()+n);
+            else if(tiles){
+                if(n>256ull*1024*1024-tile_total)throw std::runtime_error("PAK tile data limit exceeded");
+                tile_total+=n;e.tile_bytes.insert(e.tile_bytes.end(),buffer.begin(),buffer.begin()+n);
+            }
             if(zip.GetLastError()==wxSTREAM_EOF)break;
             if(zip.GetLastError()!=wxSTREAM_NO_ERROR||!n)
                 throw std::runtime_error("ZIP read error: "+name);
