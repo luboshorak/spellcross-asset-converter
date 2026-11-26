@@ -4,6 +4,13 @@
 #include "spellcross/pack.hpp"
 #include "spellcross/semantic.hpp"
 #include "spellcross/campaign.hpp"
+#include "spellcross/music.hpp"
+#include <wx/stdpaths.h>
+#include <wx/filename.h>
+#include <wx/filefn.h>
+#include <wx/filepicker.h>
+#include <wx/utils.h>
+#include <locale>
 #include <set>
 #include <wx/sound.h>
 #include <chrono>
@@ -196,6 +203,7 @@ class Frame final : public wxFrame {
     wxChoice *block_choice{},*encoding_choice{};
     wxButton* batch_button{};
     wxButton* modern_button{};
+    wxFilePickerCtrl* ffmpeg_picker{};
     wxButton* movie_button{};
     std::map<std::string,std::vector<std::size_t>> blocks;
     std::vector<std::string> block_keys;
@@ -604,6 +612,124 @@ class Frame final : public wxFrame {
         std::ofstream out(file,std::ios::binary);out<<value;out.close();
         if(!out)throw std::runtime_error("Manifest write failed");
     }
+    struct MediaWork {
+        std::filesystem::path dir;
+        ~MediaWork(){if(!dir.empty()){std::error_code ec;std::filesystem::remove_all(dir,ec);}}
+        void create(const std::filesystem::path& parent){dir=fresh_dir(parent,".media-work-");}
+    };
+    static wxString sibling_executable(const wxString& name){
+        wxFileName app(wxStandardPaths::Get().GetExecutablePath());
+#ifdef __WXMSW__
+        app.SetFullName(name+".exe");
+#else
+        app.SetFullName(name);
+#endif
+        return app.GetFullPath();
+    }
+    static wxString default_ffmpeg(){
+        auto local=sibling_executable("ffmpeg");
+        if(wxFileExists(local))return local;
+        wxString env,found;
+#ifdef __WXMSW__
+        const wxString exe="ffmpeg.exe";
+#else
+        const wxString exe="ffmpeg";
+#endif
+        if(wxGetEnv("PATH",&env)&&wxFindFileInPath(&found,env,exe))return found;
+        return {};
+    }
+    static void run_media(const wxString& exe,const std::filesystem::path& dir,std::vector<wxString> args){
+        if(exe.empty()||!wxFileExists(exe))throw std::runtime_error("Required media executable not found");
+        args.insert(args.begin(),exe);
+        args.emplace_back(); // wxExecute argv is terminated by an empty wxString.
+        wxExecuteEnv env;env.cwd=w(sc::utf8(dir));
+        auto code=wxExecute(args.data(),wxEXEC_SYNC,nullptr,&env);
+        if(code!=0)throw std::runtime_error("Media process failed (exit "+std::to_string(code)+")");
+    }
+    static sc::Bytes read_media(const std::filesystem::path& p,std::size_t limit){
+        auto n=std::filesystem::file_size(p);
+        if(!n||n>limit)throw std::runtime_error("Media output missing or too large");
+        sc::Bytes data(static_cast<std::size_t>(n));std::ifstream in(p,std::ios::binary);
+        if(!in.read(reinterpret_cast<char*>(data.data()),static_cast<std::streamsize>(data.size())))throw std::runtime_error("Media read failed");
+        return data;
+    }
+    static void same_file(const std::filesystem::path& a,const std::filesystem::path& b){
+        if(std::filesystem::file_size(a)!=std::filesystem::file_size(b))throw std::runtime_error("Video round-trip frame count mismatch");
+        std::ifstream x(a,std::ios::binary),y(b,std::ios::binary);
+        std::array<char,65536> p{},q{};
+        for(auto left=std::filesystem::file_size(a);left;){
+            auto n=static_cast<std::streamsize>(std::min<std::uintmax_t>(left,p.size()));
+            if(!x.read(p.data(),n)||!y.read(q.data(),n)||!std::equal(p.begin(),p.begin()+n,q.begin()))
+                throw std::runtime_error("Video round-trip pixel mismatch");
+            left-=n;
+        }
+    }
+    static void pak_media_file(wxZipOutputStream& z,const wxString& name,const std::filesystem::path& p){
+        auto size=std::filesystem::file_size(p);
+        auto* entry=new wxZipEntry(name,wxDateTime(1,wxDateTime::Jan,2000),static_cast<wxFileOffset>(size));
+        entry->SetMethod(wxZIP_METHOD_STORE);
+        if(!z.PutNextEntry(entry))throw std::runtime_error("Cannot create movie PAK entry");
+        std::ifstream in(p,std::ios::binary);std::array<char,65536> buf{};
+        for(auto left=size;left;){
+            auto n=static_cast<std::size_t>(std::min<std::uintmax_t>(left,buf.size()));
+            if(!in.read(buf.data(),static_cast<std::streamsize>(n)))throw std::runtime_error("Cannot read movie output");
+            z.Write(buf.data(),n);if(z.LastWrite()!=n||!z.IsOk())throw std::runtime_error("Movie PAK write failed");
+            left-=n;
+        }
+        if(!z.CloseEntry())throw std::runtime_error("Movie PAK close failed");
+    }
+    std::string convert_movie(const sc::Asset& a,const std::filesystem::path& dir,const wxString& ffmpeg){
+        using sc::pack::json;
+        auto movie=sc::decode_video(inv,a);
+        if(a.format=="DP2"&&movie.wave.empty())throw std::runtime_error("DP2 companion audio missing; original retained");
+        auto count=movie.frames.size();
+        if(movie.width<=0||movie.height<=0||movie.width>4096||movie.height>4096||
+           !count||(movie.palettes.size()!=1&&movie.palettes.size()!=count))
+            throw std::runtime_error("Invalid decoded video geometry");
+        auto pixels=std::size_t(movie.width)*movie.height;
+        if(pixels>512u*1024u*1024u/count)throw std::runtime_error("Video exceeds export memory limit");
+        auto dimensions=std::to_string(movie.width)+"x"+std::to_string(movie.height);
+        std::ostringstream fps;fps.imbue(std::locale::classic());fps<<std::setprecision(15)<<movie.fps;
+        auto frame_rate=fps.str();
+        std::ofstream raw(dir/"frames.rgb",std::ios::binary);
+        sc::Bytes rgb(pixels*3);
+        for(std::size_t i=0;i<count;++i){
+            auto& frame=movie.frames[i];if(frame.size()!=pixels)throw std::runtime_error("Video frame dimensions mismatch");
+            auto& pal=movie.palettes[movie.palettes.size()==1?0:i];
+            for(std::size_t j=0;j<pixels;++j)std::copy_n(pal.begin()+frame[j]*3,3,rgb.begin()+j*3);
+            raw.write(reinterpret_cast<const char*>(rgb.data()),static_cast<std::streamsize>(rgb.size()));
+            if(!raw)throw std::runtime_error("Video staging write failed");
+        }
+        raw.close();if(!raw)throw std::runtime_error("Video staging close failed");
+        std::optional<sc::Pcm> pcm;
+        if(!movie.wave.empty()){
+            pcm=sc::decode_sample(a,movie.wave);
+            if(!pcm)throw std::runtime_error("Unsupported decoded movie audio");
+            write_bytes(dir/"audio.wav",sc::pcm_wave(pcm->samples,pcm->rate,pcm->channels));
+        }
+        movie.frames.clear();movie.palettes.clear();movie.wave.clear();
+        std::vector<wxString> args={"-nostdin","-hide_banner","-loglevel","error","-y","-f","rawvideo","-pixel_format","rgb24",
+            "-video_size",w(dimensions),"-framerate",w(frame_rate),"-i","frames.rgb"};
+        if(pcm)args.insert(args.end(),{"-i","audio.wav"});
+        args.insert(args.end(),{"-map","0:v:0","-c:v","ffv1","-level","3","-pix_fmt","bgr0","-threads","1"});
+        if(pcm)args.insert(args.end(),{"-map","1:a:0","-c:a","flac","-sample_fmt","s16"});
+        args.insert(args.end(),{"-map_metadata","-1","movie.mkv"});
+        run_media(ffmpeg,dir,std::move(args));
+        run_media(ffmpeg,dir,{"-nostdin","-hide_banner","-loglevel","error","-y","-i","movie.mkv","-map","0:v:0","-vsync","0","-f","rawvideo","-pix_fmt","rgb24","verified.rgb"});
+        same_file(dir/"frames.rgb",dir/"verified.rgb");
+        if(pcm){
+            run_media(ffmpeg,dir,{"-nostdin","-hide_banner","-loglevel","error","-y","-i","movie.mkv","-map","0:a:0","-c:a","pcm_s16le","verified.wav"});
+            auto check=sc::decode_sample(a,read_media(dir/"verified.wav",256u*1024u*1024u));
+            if(!check||check->rate!=pcm->rate||check->channels!=pcm->channels||check->samples!=pcm->samples)
+                throw std::runtime_error("Movie audio round-trip mismatch");
+        }
+        std::ostringstream meta;meta<<"{\"schema\":\"spellcross-movie\",\"version\":1,\"entry\":\"movie.mkv\",\"codec\":\"FFV1\","
+            <<"\"width\":"<<movie.width<<",\"height\":"<<movie.height<<",\"fps\":"<<frame_rate<<",\"frames\":"<<count
+            <<",\"audio_codec\":"<<(pcm?"\"FLAC\"":"null")<<",\"audio_note\":"<<json(movie.audio_note)
+            <<",\"rgb_roundtrip_verified\":true,\"pcm_roundtrip_verified\":"<<(pcm?"true":"null");
+        if(pcm)meta<<",\"sample_rate\":"<<pcm->rate<<",\"channels\":"<<pcm->channels<<",\"sample_frames\":"<<pcm->samples.size()/pcm->channels;
+        meta<<"}\n";return meta.str();
+    }
     void convert_modern(){
         using sc::pack::json;
         stop_play();if(blocks.empty())return;
@@ -611,6 +737,8 @@ class Frame final : public wxFrame {
         if(d.ShowModal()!=wxID_OK)return;
         const int choice=block_choice->GetSelection();
         const bool partial=choice>0;
+        auto ffmpeg=ffmpeg_picker->GetPath();
+        if(!ffmpeg.empty()){wxFileName executable(ffmpeg);executable.MakeAbsolute();ffmpeg=executable.GetFullPath();}
         std::map<std::string,std::vector<std::size_t>> packages;
         std::map<std::string,std::size_t> occurrences;
         std::vector<std::string> ids(inv.assets.size());
@@ -695,13 +823,30 @@ class Frame final : public wxFrame {
                         auto base="records/"+std::to_string(i)+"/";
                         std::vector<sc::Sprite> images;
                         bool font_asset=false;
+                        MediaWork media;
+                        bool movie_output=false;
                         std::string font_meta;
                         std::vector<std::pair<std::string,sc::Bytes>> derived;
                         auto add_text=[&](std::string name,const std::string& s){derived.emplace_back(std::move(name),sc::Bytes(s.begin(),s.end()));};
                         if(status!="container")try{
-                            if(a.size<=64u*1024u*1024u){
+                            if(sc::is_video(a)){
+                                if(ffmpeg.empty()||!wxFileExists(ffmpeg))detail="FFmpeg unavailable; original movie retained";
+                                else{
+                                    media.create(dest);
+                                    add_text("movie.json",convert_movie(a,media.dir,ffmpeg));
+                                    movie_output=true;status="converted";detail="FFV1/FLAC MKV; exact decoded RGB and PCM verified";payload=base+"movie.json";
+                                }
+                            }else if(a.size<=64u*1024u*1024u){
                                 auto data=sc::decode_asset(a);
-                                if(auto unit_json=sc::unit_definitions(a,data)){
+                                auto music=sc::music_kind(data);
+                                if(music==sc::MusicKind::midi){
+                                    sc::validate_midi(data);derived.emplace_back("music.mid",std::move(data));status="converted";detail="Validated standard MIDI; bytes unchanged";payload=base+"music.mid";
+                                }else if(music==sc::MusicKind::xmidi){
+                                    sc::validate_xmidi(data);media.create(dest);write_bytes(media.dir/"source.xmi",data);
+                                    run_media(sibling_executable("sc_xmidi_worker"),media.dir,{"source.xmi","music.mid"});
+                                    auto mid=read_media(media.dir/"music.mid",64u*1024u*1024u);sc::validate_midi(mid);
+                                    derived.emplace_back("music.mid",std::move(mid));status="converted";detail="XMIDI to SMF using Reloaded converter (no instrument remap)";payload=base+"music.mid";
+                                }else if(auto unit_json=sc::unit_definitions(a,data)){
                                     add_text("units.json",*unit_json);status="converted";detail="Unit fields and exact original record hex";payload=base+"units.json";
                                 }else if(auto map=sc::tactical_map(a,data)){
                                     add_text("map.json",map->metadata);
@@ -771,7 +916,7 @@ class Frame final : public wxFrame {
                                     if(font_asset){add_text("font.json",font_meta);payload=base+"font.json";detail="Bitmap font glyphs, code positions and spacing";}
                                 }
                             }else detail="Asset exceeds conversion memory limit";
-                        }catch(const std::exception& e){images.clear();derived.clear();status="failed";detail=e.what();payload.clear();log("PAK: "+w(a.name)+": "+w(detail));}
+                        }catch(const std::exception& e){images.clear();derived.clear();movie_output=false;status="failed";detail=e.what();payload.clear();log("PAK: "+w(a.name)+": "+w(detail));}
                         if(!images.empty()){
                             auto frame_palette=sc::asset_palette(inv,a,palette);
                             if(font_asset){frame_palette={};frame_palette.rgb[3]=frame_palette.rgb[4]=frame_palette.rgb[5]=255;frame_palette.known[0]=frame_palette.known[1]=true;}
@@ -788,6 +933,7 @@ class Frame final : public wxFrame {
                                 pixel_total+=im.indices.size();++frames;
                             }
                         }
+                        if(movie_output)pak_media_file(zip,w(base+"movie.mkv"),media.dir/"movie.mkv");
                         for(auto& [name,bytes]:derived)pak_bytes(zip,w(base+name),bytes);
                         std::string fallback;
                         // Raw or failed assets must be directly addressable.
@@ -1003,7 +1149,7 @@ public:
         auto* root=new wxBoxSizer(wxVERTICAL);SetSizer(root);
         auto* header=new wxPanel(this);paint(header,false);auto* hs=new wxBoxSizer(wxVERTICAL);header->SetSizer(hs);
         label(header,hs,"SPELLCROSS  /  ASSET CONVERTER",true);
-        label(header,hs,"RELOADED TOOLKIT   |   v0.8.0   |   Original data inventory");
+        label(header,hs,"RELOADED TOOLKIT   |   v0.9.0   |   Original data inventory");
         root->Add(header,0,wxEXPAND);
         tabs=new wxNotebook(this,wxID_ANY);root->Add(tabs,1,wxALL|wxEXPAND,10);
         wxBoxSizer* s;
@@ -1062,6 +1208,9 @@ public:
         label(conversion,s,"Modern game data (.pak)",true);
         label(conversion,s,"Choose all game data or one source archive.\nCreate logical PAK packages with shared indexed atlases, palettes and manifests.\nUnconverted assets and original containers are preserved.");
         block_choice=new wxChoice(conversion,wxID_ANY);block_choice->Append("All game data");block_choice->SetSelection(0);s->Add(block_choice,0,wxEXPAND|wxALL,10);
+        label(conversion,s,"FFmpeg executable (optional, required for lossless video export)");
+        ffmpeg_picker=new wxFilePickerCtrl(conversion,wxID_ANY,default_ffmpeg(),"Select FFmpeg executable",wxFileSelectorDefaultWildcardStr,wxDefaultPosition,wxDefaultSize,wxFLP_OPEN|wxFLP_USE_TEXTCTRL);
+        s->Add(ffmpeg_picker,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,10);
         modern_button=button(conversion,s,modern_id,"Convert to modern PAK");modern_button->Enable(false);
         batch_button=button(conversion,s,batch_id,"Diagnostic ZIP export (legacy)");batch_button->Enable(false);
         label(conversion,s,"Lossless raw extraction",true);
@@ -1079,7 +1228,7 @@ public:
         Bind(wxEVT_MENU,[this](wxCommandEvent&){analyze();},scan_id);
         Bind(wxEVT_MENU,[this](wxCommandEvent&){export_manifest();},save_manifest);
         Bind(wxEVT_MENU,[this](wxCommandEvent&){Close();},wxID_EXIT);
-        Bind(wxEVT_MENU,[this](wxCommandEvent&){wxMessageBox("Spellcross Asset Converter 0.8.0\nPart of Spellcross Reloaded\nMIT license\nCopyright (c) 2026 Luboš Horák\nSpellcross Reloaded by Luboš Horák; foundations by Stanislav Mašláň.\nhttps://github.com/luboshorak/spellcross-reloaded\nCAN decoder: CPAL-1.0; libsmacker: LGPL-2.1-or-later.","About",wxOK|wxICON_INFORMATION,this);},wxID_ABOUT);
+        Bind(wxEVT_MENU,[this](wxCommandEvent&){wxMessageBox("Spellcross Asset Converter 0.9.0\nPart of Spellcross Reloaded\nMIT license\nCopyright (c) 2026 Luboš Horák\nSpellcross Reloaded by Luboš Horák; foundations by Stanislav Mašláň.\nhttps://github.com/luboshorak/spellcross-reloaded\nCAN decoder: CPAL-1.0; libsmacker: LGPL-2.1-or-later.","About",wxOK|wxICON_INFORMATION,this);},wxID_ABOUT);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){choose(true);},open_dir);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){choose(false);},open_file);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){analyze();},scan_id);

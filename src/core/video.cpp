@@ -90,7 +90,7 @@ Video decode_video(const Inventory& inv,const Asset& a){
             auto stem=upper(a.name.substr(0,a.name.find_last_of('.')));
             v.audio_note="DP2 companion audio not found";
             for(auto& entry:inv.assets){
-                if(entry.backing!=a.backing||entry.size>max_input)continue;
+                if(entry.size>max_input||entry.member!=a.member||(a.member&&entry.backing!=a.backing))continue;
                 auto n=upper(entry.name);if(n!=stem&&n!=stem+".WAV")continue;
                 auto wave=preview(entry,static_cast<std::size_t>(entry.size));
                 if(wave.size()>=12&&std::string(wave.begin(),wave.begin()+4)=="RIFF"&&std::string(wave.begin()+8,wave.begin()+12)=="WAVE"){
@@ -99,7 +99,13 @@ Video decode_video(const Inventory& inv,const Asset& a){
             }
         }
     }
-    if(v.frames.empty()||v.palettes.empty()||!std::isfinite(v.fps)||v.fps<=0)throw std::runtime_error("Invalid decoded video");
+    if(v.frames.empty()||v.palettes.empty()||!std::isfinite(v.fps)||v.fps<=0||
+       v.width<=0||v.height<=0||v.width>4096||v.height>4096||
+       (v.palettes.size()!=1&&v.palettes.size()!=v.frames.size()))
+        throw std::runtime_error("Invalid decoded video");
+    auto pixels=std::size_t(v.width)*v.height;
+    if(v.frames.size()>max_pixels/pixels)throw std::runtime_error("Video exceeds decoded memory limit");
+    for(auto& frame:v.frames)if(frame.size()!=pixels)throw std::runtime_error("Invalid video frame size");
     return v;
 }
 }
