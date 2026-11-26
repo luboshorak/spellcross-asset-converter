@@ -5,6 +5,7 @@
 #include "spellcross/semantic.hpp"
 #include "spellcross/campaign.hpp"
 #include "spellcross/music.hpp"
+#include "spellcross/validation.hpp"
 #include <algorithm>
 #include <chrono>
 #include <fstream>
@@ -201,6 +202,17 @@ int main(){
         B xmi{'F','O','R','M',0,0,0,14,'X','M','I','D','E','V','N','T',0,0,0,2,0xff,0x2f};
         require(sc::music_kind(xmi)==sc::MusicKind::xmidi);sc::validate_xmidi(xmi);
         xmi[19]=99;bool bad_xmi=false;try{sc::validate_xmidi(xmi);}catch(const std::exception&){bad_xmi=true;}require(bad_xmi);
-        std::cout<<"Inventory, graphics, video, atlas, semantic, campaign and music tests passed\n";
+        using namespace sc::validation;
+        require(safe_entry("graphics/1/page.png")&&!safe_entry("../bad")&&!safe_entry("C:/bad"));
+        const unsigned char crc_test[]="123456789";require((crc32_update(0xffffffffu,crc_test,9)^0xffffffffu)==0xcbf43926u);
+        Entries entries;
+        entries["original.bin"].size=4;
+        entries["text.txt"].size=2;
+        entries["manifest.json"].json=R"({"schema":"spellcross-pak","version":1,"category":"common","partial":false,"records":[{"id":"a#1","name":"a","format":"TXT","status":"converted","original":{"entry":"original.bin","offset":1,"size":2},"payload":"text.txt"}],"graphics":[],"palettes":[]})";
+        auto summary=validate_package(entries,"common");require(summary.records==1&&summary.counts.at("converted")==1);
+        auto dataset=R"({"schema":"spellcross-dataset","version":1,"partial":false,"runtime_ready":false,"packages":[{"file":"common.pak","category":"common","records":1,"converted":1,"decoded":0,"raw":0,"failed":0,"containers":0}],"coverage_by_format":{"common/TXT":{"converted":1}},"atlas_metrics":{"frames":0,"pages":0,"source_pixels":0,"png_bytes":0}})";
+        validate_dataset(dataset,{{"common.pak",summary}});
+        entries["original.bin"].size=2;bool bad_range=false;try{validate_package(entries,"common");}catch(const std::exception&){bad_range=true;}require(bad_range);
+        std::cout<<"Inventory, graphics, video, atlas, semantic, campaign, music and PAK validation tests passed\n";
     }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}
 }
