@@ -3,6 +3,7 @@
 #include "spellcross/video.hpp"
 #include "spellcross/pack.hpp"
 #include "spellcross/semantic.hpp"
+#include "spellcross/campaign.hpp"
 #include <set>
 #include <wx/sound.h>
 #include <chrono>
@@ -191,7 +192,7 @@ class Frame final : public wxFrame {
     wxTreeCtrl* tree{};
     wxNotebook* preview_tabs{};
     Canvas* graphic{};
-    wxTextCtrl *metadata{},*raw_hex{},*text_view{};
+    wxTextCtrl *metadata{},*raw_hex{},*text_view{},*structured_view{};
     wxChoice *block_choice{},*encoding_choice{};
     wxButton* batch_button{};
     wxButton* modern_button{};
@@ -398,7 +399,7 @@ class Frame final : public wxFrame {
         active.reset();stop_play();sequence.clear();sequence_pos=0;movie_button->Enable(false);
         prev_button->Enable(false);next_button->Enable(false);play_button->Enable(false);
         png_button->Enable(false);group_button->Enable(false);export_button->Enable(false);decoded_button->Enable(false);
-        graphic->SetImage(wxImage());preview_box->Clear();raw_hex->Clear();metadata->Clear();text_view->Clear();
+        graphic->SetImage(wxImage());preview_box->Clear();raw_hex->Clear();metadata->Clear();text_view->Clear();structured_view->Clear();
         const auto& a=inv.assets[node.index];
         const auto& last=node.layers.back();
         selected_label->SetLabel(w(a.name)+" / "+w(last.label));
@@ -427,7 +428,7 @@ class Frame final : public wxFrame {
         active=a?std::optional<std::size_t>(a-inv.assets.data()):std::nullopt;
         export_button->Enable(a!=nullptr);movie_button->Enable(a&&sc::is_video(*a));
         png_button->Enable(false);group_button->Enable(false);decoded_button->Enable(false);
-        graphic->SetImage(wxImage());preview_box->Clear();raw_hex->Clear();metadata->Clear();text_view->Clear();
+        graphic->SetImage(wxImage());preview_box->Clear();raw_hex->Clear();metadata->Clear();text_view->Clear();structured_view->Clear();
         sequence.clear();sequence_pos=0;
         if(!a){stop_play();selected_label->SetLabel("Select an asset.");prev_button->Enable(false);next_button->Enable(false);play_button->Enable(false);return;}
         sequence=sc::sprite_group_members(inv,*a);
@@ -450,9 +451,21 @@ class Frame final : public wxFrame {
             preview_box->SetValue(hex(data));
             auto full=data;
             if(!sc::compressed(*a)&&a->size>data.size()&&a->size<=64*1024*1024&&
-                (a->format=="ICO"||a->format=="BTN"||a->format=="CUR"||a->format=="GFK"||a->format=="DTA"||sc::is_text_asset(*a,data)))
+                (a->format=="ICO"||a->format=="BTN"||a->format=="CUR"||a->format=="GFK"||a->format=="DTA"||a->format=="DEF"||a->format=="TUT"||sc::is_text_asset(*a,data)))
                 full=sc::decode_asset(*a);
-            if(auto decoded=sc::decode_image(*a,full)){
+            if(auto map=sc::tactical_map(*a,full)){
+                structured_view->SetValue(w(map->metadata));preview_tabs->SetSelection(5);
+                details+="\nTactical map: eight decoded layers; see Structured JSON.";
+            }else if(auto units=sc::unit_definitions(*a,full)){
+                structured_view->SetValue(w(*units));preview_tabs->SetSelection(5);
+                details+="\nDecoded unit definitions (source byte strings).";
+            }else if(auto script=sc::script_definition(*a,full)){
+                structured_view->SetValue(w(*script));text_view->SetValue(decode_text(full));preview_tabs->SetSelection(4);
+                details+="\nOrdered script JSON is also available in Structured JSON.";
+            }else if(auto table=sc::class_definition(*a,full)){
+                structured_view->SetValue(w(*table));text_view->SetValue(decode_text(full));preview_tabs->SetSelection(4);
+                details+="\nClass table JSON is also available in Structured JSON.";
+            }else if(auto decoded=sc::decode_image(*a,full)){
                 auto s=std::move(*decoded);
                 if(s.height>0){
                     graphic->SetImage(sprite_image(s,sc::asset_palette(inv,*a,palette)));png_button->Enable(a->format=="FSU-SPRITE");group_button->Enable(a->format=="FSU-SPRITE");preview_tabs->SetSelection(0);
@@ -690,6 +703,25 @@ class Frame final : public wxFrame {
                                 auto data=sc::decode_asset(a);
                                 if(auto unit_json=sc::unit_definitions(a,data)){
                                     add_text("units.json",*unit_json);status="converted";detail="Unit fields and exact original record hex";payload=base+"units.json";
+                                }else if(auto map=sc::tactical_map(a,data)){
+                                    add_text("map.json",map->metadata);
+                                    derived.emplace_back("ground.u16le",std::move(map->ground));
+                                    derived.emplace_back("objects.u8x2",std::move(map->objects));
+                                    status="converted";detail="Eight map layers, resource references and original trailing bytes";payload=base+"map.json";
+                                }else if(auto script=sc::script_definition(a,data)){
+                                    add_text("script.json",*script);
+                                    // Companion text is convenient for editing; the authoritative
+                                    // syntax JSON and original source are retained independently.
+                                    try{
+                                        auto utf=decode_text(data).utf8_str();
+                                        add_text("source.txt",std::string(utf.data(),utf.length()));
+                                    }catch(const std::exception& e){log("Script source text: "+w(a.name)+": "+w(e.what()));}
+                                    status="converted";detail="Ordered script syntax; runtime interpretation not yet migrated";payload=base+"script.json";
+                                }else if(auto table=sc::class_definition(a,data)){
+                                    add_text("classes.json",*table);
+                                    try{auto utf=decode_text(data).utf8_str();add_text("source.txt",std::string(utf.data(),utf.length()));}
+                                    catch(const std::exception& e){log("Class source text: "+w(a.name)+": "+w(e.what()));}
+                                    status="converted";detail="Ordered or ID-keyed class table with original values";payload=base+"classes.json";
                                 }else if(auto sample=sc::decode_sample(a,data)){
                                     auto wav=sc::pcm_wave(sample->samples,sample->rate,sample->channels);
                                     auto verified=sc::decode_sample(a,wav);
@@ -971,7 +1003,7 @@ public:
         auto* root=new wxBoxSizer(wxVERTICAL);SetSizer(root);
         auto* header=new wxPanel(this);paint(header,false);auto* hs=new wxBoxSizer(wxVERTICAL);header->SetSizer(hs);
         label(header,hs,"SPELLCROSS  /  ASSET CONVERTER",true);
-        label(header,hs,"RELOADED TOOLKIT   |   v0.7.0   |   Original data inventory");
+        label(header,hs,"RELOADED TOOLKIT   |   v0.8.0   |   Original data inventory");
         root->Add(header,0,wxEXPAND);
         tabs=new wxNotebook(this,wxID_ANY);root->Add(tabs,1,wxALL|wxEXPAND,10);
         wxBoxSizer* s;
@@ -1014,7 +1046,7 @@ public:
             auto* p=new wxTextCtrl(preview_tabs,wxID_ANY,"",wxDefaultPosition,wxDefaultSize,wxTE_MULTILINE|wxTE_READONLY|wxTE_DONTWRAP);
             paint(p,false);p->SetFont(wxFontInfo(10).Family(wxFONTFAMILY_TELETYPE));preview_tabs->AddPage(p,title);return p;
         };
-        raw_hex=text_page("Stored HEX");preview_box=text_page("Decoded HEX");metadata=text_page("Metadata");text_view=text_page("Text");
+        raw_hex=text_page("Stored HEX");preview_box=text_page("Decoded HEX");metadata=text_page("Metadata");text_view=text_page("Text");structured_view=text_page("Structured JSON");
         encoding_choice=new wxChoice(right,wxID_ANY);for(auto enc:{"Auto (UTF-8 / CP895)","UTF-8","CP895","CP852","Windows-1250","Windows-1252"})encoding_choice->Append(enc);
         encoding_choice->SetSelection(0);rs->Add(encoding_choice,0,wxEXPAND|wxLEFT|wxRIGHT,6);
         encoding_choice->Bind(wxEVT_CHOICE,[this](wxCommandEvent&){show_preview();});
@@ -1047,7 +1079,7 @@ public:
         Bind(wxEVT_MENU,[this](wxCommandEvent&){analyze();},scan_id);
         Bind(wxEVT_MENU,[this](wxCommandEvent&){export_manifest();},save_manifest);
         Bind(wxEVT_MENU,[this](wxCommandEvent&){Close();},wxID_EXIT);
-        Bind(wxEVT_MENU,[this](wxCommandEvent&){wxMessageBox("Spellcross Asset Converter 0.7.0\nPart of Spellcross Reloaded\nMIT license\nCopyright (c) 2026 Luboš Horák\nSpellcross Reloaded by Luboš Horák; foundations by Stanislav Mašláň.\nhttps://github.com/luboshorak/spellcross-reloaded\nCAN decoder: CPAL-1.0; libsmacker: LGPL-2.1-or-later.","About",wxOK|wxICON_INFORMATION,this);},wxID_ABOUT);
+        Bind(wxEVT_MENU,[this](wxCommandEvent&){wxMessageBox("Spellcross Asset Converter 0.8.0\nPart of Spellcross Reloaded\nMIT license\nCopyright (c) 2026 Luboš Horák\nSpellcross Reloaded by Luboš Horák; foundations by Stanislav Mašláň.\nhttps://github.com/luboshorak/spellcross-reloaded\nCAN decoder: CPAL-1.0; libsmacker: LGPL-2.1-or-later.","About",wxOK|wxICON_INFORMATION,this);},wxID_ABOUT);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){choose(true);},open_dir);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){choose(false);},open_file);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){analyze();},scan_id);
