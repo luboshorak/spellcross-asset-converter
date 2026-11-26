@@ -20,7 +20,7 @@ struct AuditRecord {
     std::string original_entry,fallback_entry,atlas_entry;
     std::uint64_t original_offset{},atlas_frames{};
 };
-struct AtlasGroup {std::string group,entry;std::uint64_t frames{};bool fsu_layout{};};
+struct AtlasGroup {std::string group,entry;std::uint64_t frames{};bool fsu_layout{};std::uint64_t static_slopes{},static_azimuths{},animation_rows{},sequence_frames{};};
 // A reference points to an asset, atlas group, or numeric ID in a
 // particular definition table. Source locations are stable record IDs
 // plus a field/line selector; unknown syntax is reported separately.
@@ -38,6 +38,7 @@ struct GameBlock {
     std::vector<std::string> args;
     std::vector<GameCommand> commands;
 };
+struct FsuContextRecord {std::string source,group;std::vector<std::uint64_t> static_azimuths;std::uint64_t animation_origins{};};
 struct PackageSummary {
     std::string category;
     std::map<std::string,std::uint64_t> counts;
@@ -50,6 +51,7 @@ struct PackageSummary {
     std::vector<GameReference> game_references;
     std::vector<DefinitionSet> definitions;
     std::vector<GameBlock> game_blocks;
+    std::vector<FsuContextRecord> fsu_contexts;
     std::map<std::string,std::uint64_t> metadata_coverage;
     std::map<std::string,std::uint64_t> unreviewed_commands;
 };
