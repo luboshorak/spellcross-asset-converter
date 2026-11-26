@@ -166,7 +166,8 @@ wxImage sprite_image(const sc::Sprite& sprite,const sc::Palette& palette,int mod
     auto* rgb=image.GetData();auto* alpha=mode==0?image.GetAlpha():nullptr;
     for(std::size_t i=0;i<sprite.indices.size();++i){
         auto idx=sprite.indices[i];
-        for(int ch=0;ch<3;++ch)rgb[i*3+ch]=mode==1?idx:mode==2?sprite.opaque[i]:sprite.shadow_index&&idx==253?0:palette.rgb[idx*3+ch];
+        auto display_idx=sprite.opaque_zero_uses_254&&idx==0&&sprite.opaque[i]?254:idx;
+        for(int ch=0;ch<3;++ch)rgb[i*3+ch]=mode==1?idx:mode==2?sprite.opaque[i]:sprite.shadow_index&&idx==253?0:palette.rgb[display_idx*3+ch];
         if(alpha)alpha[i]=!sprite.opaque[i]?0:sprite.shadow_index&&idx==253?128:255;
     }
     return image;
@@ -217,6 +218,9 @@ class Frame final : public wxFrame {
     std::vector<wxTreeItemId> nodes;
     std::optional<std::size_t> active;
     std::vector<std::size_t> sequence;
+    std::vector<wxImage> animation_preview;
+    std::size_t animation_pos{};
+    wxString animation_name;
     std::size_t sequence_pos{};
     bool rebuilding=false;
     wxChoice* kind{};
@@ -442,7 +446,7 @@ class Frame final : public wxFrame {
         }return w(o.str());
     }
     void show_layer(const ItemData& node){
-        active.reset();stop_play();sequence.clear();sequence_pos=0;movie_button->Enable(false);
+        active.reset();stop_play();sequence.clear();sequence_pos=0;animation_preview.clear();animation_pos=0;movie_button->Enable(false);
         prev_button->Enable(false);next_button->Enable(false);play_button->Enable(false);
         png_button->Enable(false);group_button->Enable(false);export_button->Enable(false);decoded_button->Enable(false);
         graphic->SetImage(wxImage());preview_box->Clear();raw_hex->Clear();metadata->Clear();text_view->Clear();structured_view->Clear();
@@ -476,6 +480,7 @@ class Frame final : public wxFrame {
         png_button->Enable(false);group_button->Enable(false);decoded_button->Enable(false);
         graphic->SetImage(wxImage());preview_box->Clear();raw_hex->Clear();metadata->Clear();text_view->Clear();structured_view->Clear();
         sequence.clear();sequence_pos=0;
+        if(!animation_preview.empty())stop_play();animation_preview.clear();animation_pos=0;
         if(!a){stop_play();selected_label->SetLabel("Select an asset.");prev_button->Enable(false);next_button->Enable(false);play_button->Enable(false);return;}
         sequence=sc::sprite_group_members(inv,*a);
         sequence.erase(std::remove_if(sequence.begin(),sequence.end(),[this](auto i){return i>=nodes.size()||!nodes[i].IsOk();}),sequence.end());
@@ -497,9 +502,45 @@ class Frame final : public wxFrame {
             preview_box->SetValue(hex(data));
             auto full=data;
             if(!sc::compressed(*a)&&a->size>data.size()&&a->size<=64*1024*1024&&
-                (a->format=="ICO"||a->format=="BTN"||a->format=="CUR"||a->format=="GFK"||a->format=="CLK"||a->format=="BIN"||a->format=="DTA"||a->format=="DEF"||a->format=="TUT"||sc::is_text_asset(*a,data)))
+                (a->format=="ICO"||a->format=="BTN"||a->format=="CUR"||a->format=="PNM"||a->format=="ANM"||a->format=="GFK"||a->format=="CLK"||a->format=="BIN"||a->format=="DTA"||a->format=="DEF"||a->format=="TUT"||sc::is_text_asset(*a,data)))
                 full=sc::decode_asset(*a);
-            if(auto rows=sc::language_table(*a,full)){
+            if(a->format=="PNM"||a->format=="ANM"){
+                auto children=sc::layer_children(*a,{});
+                std::vector<sc::Sprite> frames;
+                int xmin=0,xmax=0,ymin=0,ymax=0;bool first=true;
+                std::size_t total=0;
+                for(auto& child:children){
+                    if(child.offset>full.size()||child.size>full.size()-child.offset)throw std::runtime_error("Animation frame outside source");
+                    auto im=sc::layer_image(*a,{child},std::span<const std::uint8_t>(full).subspan(child.offset,child.size));
+                    if(!im||im->width<=0||im->height<=0)throw std::runtime_error("Invalid animation frame");
+                    total+=im->indices.size();if(total>32u*1024u*1024u)throw std::runtime_error("Animation exceeds preview limit");
+                    if(first){xmin=im->x;xmax=im->x+im->width;ymin=im->y;ymax=im->y+im->height;first=false;}
+                    else{xmin=std::min(xmin,im->x);xmax=std::max(xmax,im->x+im->width);ymin=std::min(ymin,im->y);ymax=std::max(ymax,im->y+im->height);}
+                    frames.push_back(std::move(*im));
+                }
+                auto width=xmax-xmin,height=ymax-ymin;
+                if(frames.empty()||width<=0||height<=0||width>2048||height>2048||
+                    std::uint64_t(width)*height*frames.size()>32u*1024u*1024u)throw std::runtime_error("Animation canvas exceeds preview limit");
+                auto pal=sc::asset_palette(inv,*a,palette);
+                std::vector<wxImage> preview;
+                for(auto& frame:frames){
+                    wxImage canvas(width,height);canvas.InitAlpha();
+                    std::fill_n(canvas.GetData(),std::size_t(width)*height*3,0);
+                    std::fill_n(canvas.GetAlpha(),std::size_t(width)*height,0);
+                    auto image=sprite_image(frame,pal);
+                    for(int y=0;y<frame.height;++y){
+                        auto to=std::size_t(frame.y-ymin+y)*width+frame.x-xmin,from=std::size_t(y)*frame.width;
+                        std::copy_n(image.GetData()+3*from,3*frame.width,canvas.GetData()+3*to);
+                        std::copy_n(image.GetAlpha()+from,frame.width,canvas.GetAlpha()+to);
+                    }
+                    preview.push_back(std::move(canvas));
+                }
+                animation_preview=std::move(preview);animation_name=w(a->name);animation_pos=0;
+                graphic->SetImage(animation_preview.front());preview_tabs->SetSelection(0);
+                prev_button->Enable(animation_preview.size()>1);next_button->Enable(animation_preview.size()>1);play_button->Enable(animation_preview.size()>1);
+                selected_label->SetLabel(animation_name+" | frame 1 / "+number(animation_preview.size()));
+                details+="\nAnimation: "+number(animation_preview.size())+" frames; common origin canvas "+number(width)+" x "+number(height)+"\nUse Play sequence or Previous/Next; preview speed is not original game timing.";
+            }else if(auto rows=sc::language_table(*a,full)){
                 structured_view->SetValue(w(localization_json(*a,*rows)));text_view->SetValue(decode_text(full,a));preview_tabs->SetSelection(4);
                 details+="\nPositional language entries: "+number(rows->size());
             }else if(auto map=sc::tactical_map(*a,full)){
@@ -548,6 +589,11 @@ class Frame final : public wxFrame {
         }catch(const std::exception& e){log("VIDEO ERROR: "+w(e.what()));wxMessageBox(w(e.what()),"Video decode failed",wxOK|wxICON_ERROR,this);}
     }
     void step(int direction){
+        if(!animation_preview.empty()){
+            auto count=animation_preview.size();animation_pos=(animation_pos+count+(direction>0?1:count-1))%count;
+            graphic->SetImage(animation_preview[animation_pos]);
+            selected_label->SetLabel(animation_name+" | frame "+number(animation_pos+1)+" / "+number(count));return;
+        }
         if(sequence.size()<2)return;
         auto next=(sequence_pos+sequence.size()+(direction>0?1:sequence.size()-1))%sequence.size();
         auto item=nodes[sequence[next]];
@@ -1081,7 +1127,7 @@ class Frame final : public wxFrame {
                                 graphic_records<<"{\"id\":"<<json(ids[i])<<",\"frame\":"<<frame<<",\"page\":"<<page
                                     <<",\"rect\":["<<rect->x<<','<<rect->y<<','<<rect->width<<','<<rect->height<<"]"
                                     <<",\"origin\":["<<im.x<<','<<im.y<<"],\"palette\":"<<palette_id
-                                    <<",\"shadow_index\":"<<(im.shadow_index?"253":"null")<<",\"trailing_bytes\":"<<im.trailing_bytes<<"}";
+                                    <<",\"shadow_index\":"<<(im.shadow_index?"253":"null")<<",\"opaque_zero_display_index\":"<<(im.opaque_zero_uses_254?"254":"null")<<",\"trailing_bytes\":"<<im.trailing_bytes<<"}";
                                 pixel_total+=im.indices.size();++frames;
                             }
                         }
@@ -1318,7 +1364,7 @@ public:
         auto* root=new wxBoxSizer(wxVERTICAL);SetSizer(root);
         auto* header=new wxPanel(this);paint(header,false);auto* hs=new wxBoxSizer(wxVERTICAL);header->SetSizer(hs);
         label(header,hs,"SPELLCROSS  /  ASSET CONVERTER",true);
-        label(header,hs,"RELOADED TOOLKIT   |   v0.9.3   |   Original data inventory");
+        label(header,hs,"RELOADED TOOLKIT   |   v0.9.4   |   Original data inventory");
         root->Add(header,0,wxEXPAND);
         tabs=new wxNotebook(this,wxID_ANY);root->Add(tabs,1,wxALL|wxEXPAND,10);
         wxBoxSizer* s;
@@ -1398,7 +1444,7 @@ public:
         Bind(wxEVT_MENU,[this](wxCommandEvent&){analyze();},scan_id);
         Bind(wxEVT_MENU,[this](wxCommandEvent&){export_manifest();},save_manifest);
         Bind(wxEVT_MENU,[this](wxCommandEvent&){Close();},wxID_EXIT);
-        Bind(wxEVT_MENU,[this](wxCommandEvent&){wxMessageBox("Spellcross Asset Converter 0.9.3\nPart of Spellcross Reloaded\nMIT license\nCopyright (c) 2026 Luboš Horák\nSpellcross Reloaded by Luboš Horák; foundations by Stanislav Mašláň.\nhttps://github.com/luboshorak/spellcross-reloaded\nCAN decoder: CPAL-1.0; libsmacker: LGPL-2.1-or-later.","About",wxOK|wxICON_INFORMATION,this);},wxID_ABOUT);
+        Bind(wxEVT_MENU,[this](wxCommandEvent&){wxMessageBox("Spellcross Asset Converter 0.9.4\nPart of Spellcross Reloaded\nMIT license\nCopyright (c) 2026 Luboš Horák\nSpellcross Reloaded by Luboš Horák; foundations by Stanislav Mašláň.\nhttps://github.com/luboshorak/spellcross-reloaded\nCAN decoder: CPAL-1.0; libsmacker: LGPL-2.1-or-later.","About",wxOK|wxICON_INFORMATION,this);},wxID_ABOUT);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){choose(true);},open_dir);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){choose(false);},open_file);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){analyze();},scan_id);
@@ -1418,7 +1464,7 @@ public:
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){stop_play();step(1);},next_id);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){
             if(timer.IsRunning())stop_play();
-            else if(sequence.size()>1){play_button->SetLabel("Pause sequence");timer.Start(160);}
+            else if(sequence.size()>1||animation_preview.size()>1){play_button->SetLabel("Pause sequence");timer.Start(160);}
         },play_id);
         Bind(wxEVT_TIMER,[this](wxTimerEvent&){step(1);},timer.GetId());
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){stop_play();tree->Unselect();show_preview();tree->SetFocus();},clear_id);

@@ -152,7 +152,7 @@ int main(){
         sc::Asset icon;icon.format="ICO";icon.name="COMMON.FS::ICON.ICO";
         B icon_data{0,0,2,0,3,0,1, 2,2,0,33,255};
         auto ico=sc::decode_image(icon,icon_data);
-        require(ico&&ico->width==3&&ico->indices[0]==0&&ico->opaque[0]==255&&ico->opaque[2]==0&&!ico->shadow_index);
+        require(ico&&ico->width==3&&ico->indices[0]==0&&ico->opaque[0]==255&&ico->opaque[2]==0&&!ico->shadow_index&&ico->opaque_zero_uses_254);
         sc::Asset raw_icon;raw_icon.format="LZ";raw_icon.name="COMMON.FS::I_TEST.LZ";
         auto raw_img=sc::decode_image(raw_icon,B(120,12));require(raw_img&&raw_img->width==60&&raw_img->height==2);
         sc::Asset txt;txt.name="COMMON.FS::LEVEL1.DEF";txt.format="DEF";txt.member=true;
@@ -176,7 +176,7 @@ int main(){
         auto archive=sc::layer_children(nested,{});require(archive.size()==1&&archive[0].format=="FS");
         recipe={archive[0]};auto children=sc::layer_children(nested,recipe);require(children.size()==2);
         recipe.push_back(children[0]);require(sc::layer_bytes(nested,recipe)==B({'a','b','c'}));
-        B pnm(5+icon_data.size());pnm[0]=1;le(pnm,1,5);
+        B pnm(5+icon_data.size());pnm[0]=1;le(pnm,1,4);
         std::copy(icon_data.begin(),icon_data.end(),pnm.begin()+5);write(t.p/"ANIM.PNM",pnm);
         sc::Asset anim{t.p/"ANIM.PNM","ANIM.PNM","PNM",0,pnm.size(),false};
         auto frames=sc::layer_children(anim,{});require(frames.size()==1&&frames[0].format=="PNM-FRAME");
@@ -192,7 +192,7 @@ int main(){
         sc::Asset terrain;terrain.name="T11.FS::SLOPE.DTA";terrain.member=true;terrain.format="DTA";
         auto tile_image=sc::decode_image(terrain,tile);
         require(tile_image&&tile_image->width==80&&tile_image->y==-1&&tile_image->opaque[2]==0&&tile_image->indices[3]==1);
-        B anm(5+tile.size());anm[0]=1;le(anm,1,5);std::copy(tile.begin(),tile.end(),anm.begin()+5);write(t.p/"TILE.ANM",anm);
+        B anm(5+tile.size());anm[0]=1;le(anm,1,4);std::copy(tile.begin(),tile.end(),anm.begin()+5);write(t.p/"TILE.ANM",anm);
         sc::Asset anim2{t.p/"TILE.ANM","TILE.ANM","ANM",0,anm.size(),false};
         auto layers=sc::layer_children(anim2,{});require(layers.size()==1&&layers[0].format=="ANM-FRAME");
         auto tile_frame=sc::layer_image(anim2,{layers[0]},sc::layer_bytes(anim2,{layers[0]}));require(tile_frame&&tile_frame->width==80);
@@ -290,6 +290,22 @@ int main(){
         ui.name="COMMON.FS::LEVEL_02.CLK";ui.format="CLK";auto clk=sc::decode_image(ui,B{1,0,3,0,6,0,2,7,1,0});require(clk&&clk->indices==B({7,7,0}));
         ui.name="COMMON.FS::DISPLAY.PL";ui.format="PL";auto lines=sc::language_table(ui,B{';','x','\r','\n','A','\r','B',26});require(lines&&lines->size()==2&&sc::language_for(ui,"cs")=="pl");
         require(sc::narrative_display(B{'A','~','\r','\n','B','.',26})==B({'A',' ','B','.'}));
+        sc::Asset select_mask;select_mask.name="COMMON.FS::SELECT_A.LZ0";select_mask.format="LZ0";select_mask.member=true;
+        auto selection=sc::decode_image(select_mask,sprite);require(selection&&selection->indices==decoded.indices&&selection->opaque==decoded.opaque&&!selection->shadow_index);
+        sc::Asset overlay;overlay.name="COMMON.FS::PLK_ACT.LZ0";overlay.format="LZ0";overlay.member=true;
+        auto outline=sc::decode_image(overlay,B(9247));require(outline&&outline->width==138&&outline->height==67&&outline->trailing_bytes==1);
+        overlay.name="COMMON.FS::RTA_SEL.LZ0";outline=sc::decode_image(overlay,B(2113));require(outline&&outline->width==132&&outline->height==16);
+        overlay.name="COMMON.FS::LISTA_0B.LZ0";outline=sc::decode_image(overlay,B(10881));require(outline&&outline->width==160&&outline->height==68);
+        auto pnm_image=sc::layer_image(anim,{sc::layer_children(anim,{}).at(0)},icon_data);
+        require(pnm_image&&pnm_image->opaque[0]==0&&!pnm_image->opaque_zero_uses_254);
+        // Two frames at distinct relative offsets, then an alias to the first.
+        B sequence_fixture(13+2*icon_data.size());sequence_fixture[0]=3;le(sequence_fixture,1,12);le(sequence_fixture,5,12+icon_data.size());le(sequence_fixture,9,12);
+        std::copy(icon_data.begin(),icon_data.end(),sequence_fixture.begin()+13);
+        std::copy(icon_data.begin(),icon_data.end(),sequence_fixture.begin()+13+icon_data.size());
+        write(t.p/"SEQUENCE.PNM",sequence_fixture);
+        sc::Asset sequence_asset{t.p/"SEQUENCE.PNM","SEQUENCE.PNM","PNM",0,sequence_fixture.size(),false};
+        auto steps=sc::layer_children(sequence_asset,{});require(steps.size()==3&&steps[0].offset==13&&steps[1].offset==13+icon_data.size()&&steps[2].offset==13);
+        require(sc::layer_bytes(sequence_asset,{steps[2]})==icon_data);
         std::cout<<"Inventory, graphics, video, atlas, semantic, campaign, music and presentation tests passed\n";
     }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}
 }
