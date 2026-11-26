@@ -30,3 +30,7 @@ LZ dictionary and FSU resource/scanline layout references: `LZ_spell.cpp`, `LZ_s
 ICO/BTN/CUR and named raw image layout references: `spell_graphics.cpp` and `spellcross.cpp`, and CP895 mapping reference `other.cpp`, in the MIT-licensed Spellcross Map Editor / Reloaded sources (same license terms above).
 
 PNM frame table and scanline layout reference: `sprites.cpp`, AnimPNM::Decode, MIT-licensed Spellcross Map Editor / Reloaded sources.
+
+## Reloaded video decoder snapshot
+
+See `vendor/reloaded/README.md`. CAN: CPAL-1.0, Copyright (c) 2026 Luboš Horák; libsmacker: LGPL-2.1-or-later, Greg Kennedy; DPK/DP2 layout based on MIT Spellcross Map Editor, Stanislav Maslan (2022). Converter-owned code retains MIT. Preserve the upstream attribution and source availability obligations in any distribution. libsmacker is a shared library, not embedded into the executable.
