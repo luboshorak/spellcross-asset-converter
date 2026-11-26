@@ -80,6 +80,12 @@ int main(){
         require(spr!=units.assets.end()&&spr->name=="UNITS.FSU::TEST/000"&&sc::decode_asset(*spr)==sprite);
         le(fsu,22,0xffffffff);write(t.p/"BROKEN.FSU",fsu);
         auto broken=sc::scan(t.p/"BROKEN.FSU");require(broken.warnings.size()==1&&broken.assets.size()==1);
-        std::cout<<"Inventory and graphics tests passed\n";
+        auto group=sc::sprite_group_members(units,*spr);
+        require(group.size()==1&&units.assets[group[0]].name==spr->name);
+        auto meta=sc::sprite_metadata(*spr,decoded,sc::tactical_palette(units));
+        require(meta.find("\"x_offset\": -2")!=std::string::npos);
+        require(meta.find("\"shadow_index\": 253")!=std::string::npos);
+        require(meta.find("\"stored_bytes\": \"original.bin\"")!=std::string::npos);
+        std::cout<<"Inventory, graphics and export metadata tests passed\n";
     }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}
 }
