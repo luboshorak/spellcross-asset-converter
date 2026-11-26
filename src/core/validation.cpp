@@ -4,6 +4,8 @@
 #include <set>
 #include <stdexcept>
 #include <variant>
+#include <sstream>
+#include <iomanip>
 namespace sc::validation {
 namespace {
 [[noreturn]] void fail(const std::string& msg){throw std::runtime_error(msg);}
@@ -101,28 +103,47 @@ PackageSummary validate_package(const Entries& entries,std::string_view expected
     PackageSummary out;out.category=j.at("category").str();if(out.category!=expected)fail("Package category mismatch");
     j.at("partial").boolean();
     std::map<std::string,std::string> payloads;
-    std::set<std::string> ids,graphics,used_pages;
+    std::set<std::string> ids,graphics,used_pages,originals,derived;
+    std::map<std::string,std::size_t> audit_index;
+    out.zip_entries=entries.size();
     for(auto& r:j.at("records").arr()){
         auto id=r.at("id").str(),status=r.at("status").str(),fmt=r.at("format").str();
         if(id.empty()||!ids.insert(id).second||!statuses.contains(status))fail("Duplicate ID or invalid record status: "+id);
-        r.at("name").str();++out.records;++out.counts[status];++out.formats[key(fmt,status)];
+        ++out.records;++out.counts[status];++out.formats[key(fmt,status)];
+        AuditRecord row;row.id=id;row.name=r.at("name").str();row.format=fmt;row.status=status;
+        if(auto detail=r.get("detail"))row.detail=detail->str();
         auto& orig=r.at("original");auto& source=entry(entries,orig.at("entry").str());auto off=orig.at("offset").num(),n=orig.at("size").num();
         if(off>source.size||n>source.size-off)fail("Original range outside entry: "+id);
-        if(auto fb=r.get("fallback"))size_is(entry(entries,fb->str()),n);
-        if(auto p=r.get("payload")){entry(entries,p->str());payloads.emplace(id,p->str());}
-        else if(status=="converted"||status=="decoded")fail("Missing converted payload: "+id);
+        row.source_bytes=n;originals.insert(orig.at("entry").str());
+        if(auto fb=r.get("fallback")){size_is(entry(entries,fb->str()),n);originals.insert(fb->str());}
+        if(auto p=r.get("payload")){
+            row.payload=p->str();row.payload_bytes=entry(entries,row.payload).size;
+            payloads.emplace(id,row.payload);derived.insert(row.payload);
+        }else if(status=="converted"||status=="decoded")fail("Missing converted payload: "+id);
+        if(status=="container"){row.kind="original-container";row.assessment="preserved-container";}
+        else if(status=="raw"||status=="failed"){row.kind="original-only";row.assessment="legacy-required";}
+        else if(status=="decoded"){row.kind="decoded-binary";row.assessment="legacy-required";}
+        else{row.kind="unclassified";row.assessment="semantic-review";}
+        audit_index.emplace(id,out.audit_records.size());
+        out.audit_records.push_back(std::move(row));
     }
     auto& palettes=j.at("palettes").arr();
-    for(auto& p:palettes){size_is(entry(entries,p.at("rgb").str()),768);size_is(entry(entries,p.at("known").str()),256);}
+    for(auto& p:palettes){
+        auto rgb=p.at("rgb").str(),known=p.at("known").str();
+        size_is(entry(entries,rgb),768);size_is(entry(entries,known),256);
+        derived.insert(rgb);derived.insert(known);
+    }
     std::map<std::string,std::set<std::string>> owners;
     std::map<std::string,std::uint64_t> frame_counts;
     for(auto& g:j.at("graphics").arr()){
         auto name=g.str();if(!graphics.insert(name).second)fail("Duplicate atlas manifest");
+        derived.insert(name);
         auto a=parse(entry(entries,name).json);schema(a,"spellcross-atlas");
         std::vector<std::pair<int,int>> dimensions;
         for(auto& p:a.at("pages").arr()){
             auto i=p.at("indices").str(),m=p.at("opacity").str();
             if(i==m||!used_pages.insert(i).second||!used_pages.insert(m).second)fail("Reused atlas page");
+            derived.insert(i);derived.insert(m);
             auto& x=entry(entries,i);auto& y=entry(entries,m);
             if(x.png_width<=0||x.png_height<=0||x.png_width>2048||x.png_height>2048||
                x.png_width!=y.png_width||x.png_height!=y.png_height)fail("Atlas plane dimensions mismatch");
@@ -138,6 +159,11 @@ PackageSummary validate_package(const Entries& entries,std::string_view expected
             if(!w||!h||x>unsigned(pw)||y>unsigned(ph)||w>unsigned(pw)-x||h>unsigned(ph)-y)fail("Atlas frame outside page: "+id);
             if(ordinal!=frame_counts[id]++)fail("Non-contiguous atlas frame ordinal: "+id);
             owners[id].insert(name);++out.frames;out.pixels+=w*h;
+            auto& row=out.audit_records.at(audit_index.at(id));
+            if(row.format=="FSU-SPRITE"){
+                if(!a.get("fsu_layout"))row.notes="Missing FSU layout";
+                if(auto error=a.get("fsu_layout_error"))row.notes="FSU layout error: "+error->str();
+            }
         }
         if(auto layout=a.get("fsu_layout")){
             schema(*layout,"spellcross-fsu-layout");
@@ -162,20 +188,65 @@ PackageSummary validate_package(const Entries& entries,std::string_view expected
     }
     for(auto& [id,p]:payloads){
         auto& e=entry(entries,p);
-        if(graphics.contains(p)){if(!owners[id].contains(p))fail("Missing atlas frames: "+id);continue;}
+        auto& row=out.audit_records.at(audit_index.at(id));
+        if(graphics.contains(p)){
+            if(!owners[id].contains(p))fail("Missing atlas frames: "+id);
+            row.kind="indexed-atlas";
+            if(row.format=="FSU-SPRITE"){
+                row.assessment="semantic-review";
+                if(row.notes.empty())row.notes="FSU layout present; timing, fire origins and compositing need verification";
+            }else if(row.format=="ANM"||row.format=="PNM"){
+                row.assessment="semantic-review";row.notes="Frame timing and animation semantics need verification";
+            }else{
+                row.assessment="modern-payload";row.notes="Pixel geometry only; palette and rendering parity not certified";
+            }
+            continue;
+        }
         if(p.ends_with("/font.json")){
             auto f=parse(e.json);schema(f,"spellcross-bitmap-font");
             if(f.at("id").str()!=id||!owners[id].contains(f.at("atlas").str())||f.at("glyph_count").num()!=frame_counts[id])fail("Font atlas mismatch");
+            row.kind="bitmap-font";row.notes="Original code positions; Unicode mapping needs review";
         }else if(p.ends_with("/map.json")){
             auto m=parse(e.json);schema(m,"spellcross-tactical-map");
             auto w=m.at("width").num(),h=m.at("height").num();if(!w||!h||w>1000000||h>1000000/w)fail("Invalid map dimensions");
-            for(auto layer:{"ground","objects"})size_is(entry(entries,relative(p,m.at(layer).at("entry").str())),w*h*2);
+            for(auto layer:{"ground","objects"}){
+                auto loc=relative(p,m.at(layer).at("entry").str());
+                size_is(entry(entries,loc),w*h*2);derived.insert(loc);
+            }
+            row.kind="tactical-map";row.notes="Map layers present; resource links and runtime semantics not verified";
         }else if(p.ends_with("/movie.json")){
             auto m=parse(e.json);schema(m,"spellcross-movie");
-            if(!m.at("rgb_roundtrip_verified").boolean()||!entry(entries,relative(p,m.at("entry").str())).size)fail("Unverified or empty movie");
-        }else if(p.ends_with(".json")){parse(e.json);}
+            auto loc=relative(p,m.at("entry").str());
+            if(!m.at("rgb_roundtrip_verified").boolean()||!entry(entries,loc).size)fail("Unverified or empty movie");
+            derived.insert(loc);row.kind="lossless-movie";row.assessment="modern-payload";
+            row.notes="Exporter reports RGB round-trip; independent timing/audio verification still required";
+        }else if(p.ends_with(".json")){
+            auto meta=parse(e.json);
+            if(p.ends_with("/units.json")){row.kind="unit-definitions";row.notes="Unmapped fields and cross-references need review";}
+            else if(p.ends_with("/script.json")){row.kind="ordered-script";row.notes="Syntax preserved; command interpretation and links need review";}
+            else if(p.ends_with("/classes.json")){row.kind="class-table";row.notes="Class and resource links need review";}
+            else if(p.ends_with("/language.json")){row.kind="language-table";row.notes="Entry IDs and encoding parity need review";}
+            else{row.kind="other-json";row.notes="Payload schema and semantics need review";}
+        }else if(row.status=="decoded"){row.kind="decoded-binary";}
+        else if(p.ends_with("/audio.wav")){row.kind="pcm-wave";row.assessment="modern-payload";row.notes="PCM round-trip checked on export; not re-decoded by this audit";}
+        else if(p.ends_with("/music.mid")){row.kind="standard-midi";row.assessment="modern-payload";row.notes="MIDI validation on export; playback parity not certified";}
+        else if(p.ends_with("/palette.rgb")){row.kind="rgb-palette";row.assessment="modern-payload";}
+        else if(p.ends_with("/filter.u8")){row.kind="index-filter";row.assessment="modern-payload";}
+        else if(p.ends_with("/text.txt")||p=="text.txt"){row.kind="utf8-text";row.assessment="modern-payload";row.notes="Encoding and display parity not certified";}
+        else{row.kind="other-binary";row.notes="No known modern payload contract";}
+        // Companion source text is a derived payload, not a second record.
+        if(p.starts_with("records/")){
+            auto source_text=relative(p,"source.txt");
+            if(entries.contains(source_text))derived.insert(source_text);
+        }
     }
     for(auto& [id,groups]:owners)if(!payloads.contains(id)||groups.size()!=1)fail("Orphan atlas frame: "+id);
+    for(const auto& [name,e]:entries){
+        if(name=="manifest.json")out.metadata_bytes+=e.size;
+        else if(originals.contains(name))out.original_bytes+=e.size;
+        else if(derived.contains(name))out.derived_bytes+=e.size;
+        else out.unattributed_bytes+=e.size;
+    }
     return out;
 }
 void validate_dataset(std::string_view text,const std::map<std::string,PackageSummary>& summaries){
@@ -195,6 +266,98 @@ void validate_dataset(std::string_view text,const std::map<std::string,PackageSu
     auto& m=j.at("atlas_metrics");
     if(m.at("frames").num()!=total.frames||m.at("pages").num()!=total.pages||m.at("source_pixels").num()!=total.pixels||m.at("png_bytes").num()!=total.png_bytes)fail("Dataset atlas metrics mismatch");
 }
+
+static std::string audit_cell(std::string_view value){
+    std::string out;
+    for(char c:value){
+        if(c=='\\')out+="\\\\";
+        else if(c=='\t')out+="\\t";
+        else if(c=='\n')out+="\\n";
+        else if(c=='\r')out+="\\r";
+        else out+=c;
+    }
+    // Prevent spreadsheet formula interpretation of imported source strings.
+    if(!out.empty()&&(out.front()=='='||out.front()=='+'||out.front()=='-'||out.front()=='@'))out.insert(out.begin(),'\'');
+    return out;
+}
+// pack::json encodes every original non-ASCII byte as U+00xx.
+static std::string source_name_utf8(std::string_view bytes){
+    std::string result;
+    for(unsigned char c:bytes){
+        if(c<128)result+=char(c);
+        else{result+=char(0xc0|(c>>6));result+=char(0x80|(c&63));}
+    }
+    return result;
+}
+AuditReport audit_report(std::string_view root,const std::map<std::string,PackageSummary>& packages,
+                         const std::vector<SourceRecord>* expected_source){
+    validate_dataset(root,packages);
+    auto j=parse(root);
+    std::map<std::string,const SourceRecord*> expected;
+    if(expected_source)for(const auto& item:*expected_source)
+        if(!expected.emplace(source_name_utf8(item.id),&item).second)fail("Duplicate source inventory ID");
+    std::set<std::string> seen_ids;
+    std::ostringstream report,rows;
+    report<<"PAK EXPORT AUDIT\n\n"
+        <<"Structural validation: passed\n"
+        <<"Dataset: "<<(j.at("partial").boolean()?"PARTIAL":"full selection")<<"\n"
+        <<"Manifest runtime_ready: "<<(j.at("runtime_ready").boolean()?"true":"false")<<" (declared, not certified)\n";
+    if(auto language=j.get("edition_language"))report<<"Edition: "<<language->str()<<"\n";
+    if(auto warnings=j.get("scan_warnings"))report<<"Source scan warnings: "<<warnings->arr().size()<<"\n";
+    report<<"Source inventory match: "<<(expected_source?"checked against selected scan":"not independently checked")<<"\n\n";
+    rows<<"package\tcategory\tid\tname\tformat\tstatus\tpayload_kind\tassessment\tsource_bytes\tprimary_payload_bytes\tpayload\tdetail\tnotes\n";
+    std::map<std::string,std::uint64_t> totals,kinds,assessments,unresolved;
+    std::uint64_t original=0,derived=0,metadata=0,unattributed=0,archive=0,records=0,zip_entries=0,frames=0;
+    for(const auto& [file,p]:packages){
+        report<<file<<": "<<p.records<<" records; "<<p.frames<<" atlas frames; "
+            <<count(p.counts,"converted")<<" converted, "<<count(p.counts,"decoded")<<" decoded, "
+            <<count(p.counts,"raw")<<" raw, "<<count(p.counts,"failed")<<" failed, "
+            <<count(p.counts,"container")<<" containers\n";
+        records+=p.records;zip_entries+=p.zip_entries;frames+=p.frames;
+        original+=p.original_bytes;derived+=p.derived_bytes;metadata+=p.metadata_bytes;
+        unattributed+=p.unattributed_bytes;archive+=p.archive_bytes;
+        for(const auto& [status,n]:p.counts)totals[status]+=n;
+        for(const auto& row:p.audit_records){
+            if(!seen_ids.insert(row.id).second)fail("Duplicate record ID across PAK packages: "+row.id);
+            if(expected_source){
+                auto it=expected.find(row.id);
+                if(it==expected.end())fail("Unexpected PAK record: "+row.id);
+                const auto& item=*it->second;
+                if(source_name_utf8(item.name)!=row.name||item.format!=row.format||
+                   item.category!=p.category||item.size!=row.source_bytes)
+                    fail("PAK source inventory mismatch: "+row.id);
+                expected.erase(it);
+            }
+            ++kinds[row.kind];++assessments[row.assessment];
+            if(row.assessment=="legacy-required"||row.assessment=="semantic-review")
+                ++unresolved[p.category+"/"+row.format+"/"+row.assessment];
+            rows<<audit_cell(file)<<'\t'<<audit_cell(p.category)<<'\t'<<audit_cell(row.id)<<'\t'
+                <<audit_cell(row.name)<<'\t'<<audit_cell(row.format)<<'\t'<<audit_cell(row.status)<<'\t'
+                <<audit_cell(row.kind)<<'\t'<<audit_cell(row.assessment)<<'\t'<<row.source_bytes<<'\t'
+                <<row.payload_bytes<<'\t'<<audit_cell(row.payload)<<'\t'<<audit_cell(row.detail)<<'\t'<<audit_cell(row.notes)<<'\n';
+        }
+    }
+    if(!expected.empty())fail("Missing PAK record from source inventory: "+expected.begin()->first);
+    report<<"\nTOTAL: "<<records<<" records, "<<zip_entries<<" ZIP entries, "<<frames<<" atlas frames\n";
+    for(const auto& status:statuses)report<<status<<": "<<count(totals,status)<<"\n";
+    report<<"\nASSESSMENT (not runtime certification)\n";
+    for(const auto& key:{"modern-payload","semantic-review","legacy-required","preserved-container"})
+        report<<key<<": "<<count(assessments,key)<<"\n";
+    report<<"\nPAYLOAD KINDS\n";
+    for(const auto& [kind,n]:kinds)report<<kind<<": "<<n<<"\n";
+    report<<"\nPHYSICAL PACKAGE STORAGE (bytes; each ZIP entry counted once per package)\n"
+        <<"Archive bytes on disk: "<<archive<<"\nOriginal source entries: "<<original
+        <<"\nDerived entries: "<<derived<<"\nPackage manifests: "<<metadata
+        <<"\nUnattributed entries: "<<unattributed<<"\nTotal uncompressed: "<<original+derived+metadata+unattributed<<"\n";
+    report<<"\nREMAINING WORK BY CATEGORY / FORMAT / ASSESSMENT\n";
+    for(const auto& [key,n]:unresolved)report<<key<<": "<<n<<"\n";
+    report<<"\nSee pak-audit.tsv for every record, conversion reason and review notes.\n"
+        <<"Modern-payload means a recognized output representation exists, not gameplay parity.\n"
+        <<"Shared primary payload sizes in TSV overlap; use physical totals for storage accounting.\n"
+        <<"No source byte comparison, semantic cross-link validation or runtime certification performed.\n";
+    return {report.str(),rows.str()};
+}
+
 std::uint32_t crc32_update(std::uint32_t state,const unsigned char* d,std::size_t n){
     static const auto table=[](){std::vector<std::uint32_t> t(256);for(unsigned i=0;i<256;++i){auto c=std::uint32_t(i);for(int j=0;j<8;++j)c=(c>>1)^((c&1)?0xedb88320u:0);t[i]=c;}return t;}();
     for(std::size_t i=0;i<n;++i)state=(state>>8)^table[(state^d[i])&255];return state;
