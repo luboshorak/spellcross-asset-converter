@@ -187,3 +187,7 @@ Full and partial modern exports now include `resources.json`, declared by the ro
 - New `game-metadata.json` (declared by root, verified on read-back) and `game-references.tsv` report exact source fields and candidate locators; classify resolved, optional, placeholder, missing, ambiguous, partial-selection, unsupported and shape/frame-review outcomes. Unknown commands and absent FSA context remain visible. Legacy v1 datasets can be audited without modifying them.
 
 The combined milestones are implemented as a reviewable first pass. Full retail export and reference audits, original animation timing, absent fire-origin coordinates, uncertain gameplay fields, font/terrain semantics and unreviewed commands still need confirmation. Do not equate reference resolution with gameplay parity. No SR or Build.ps1 changes. See docs/PAK-v1.md for the contract.
+
+## 0.9.14.1 — real FSA compatibility
+
+Fix decoding of editor p16 names whose length includes the terminating NUL. Keep malformed-name and duplicate checks; retain compatibility with nonterminated test fixtures. Report zero/nonzero fire origins and centers, editor provenance and unverified original coordinate parity. The supplied real FSA passed an isolated C++ parser test (137 groups, 11,040 origins, 766 centers), with independently checked coordinate values. Full converter CI remains pending. No bundled FSA or SR changes.
