@@ -1,6 +1,7 @@
 #include "spellcross/inventory.hpp"
 #include "spellcross/graphics.hpp"
 #include "spellcross/video.hpp"
+#include "spellcross/pack.hpp"
 #include <algorithm>
 #include <chrono>
 #include <fstream>
@@ -134,6 +135,22 @@ int main(){
         sc::Asset anim2{t.p/"TILE.ANM","TILE.ANM","ANM",0,anm.size(),false};
         auto layers=sc::layer_children(anim2,{});require(layers.size()==1&&layers[0].format=="ANM-FRAME");
         auto tile_frame=sc::layer_image(anim2,{layers[0]},sc::layer_bytes(anim2,{layers[0]}));require(tile_frame&&tile_frame->width==80);
-        std::cout<<"Inventory, graphics, recursive browser and video tests passed\n";
+        sc::pack::Atlas atlas(8);
+        sc::Sprite a1;a1.width=3;a1.height=2;a1.indices={0,253,17,255,1,2};a1.opaque={255,128,0,255,0,255};
+        auto r1=atlas.add(a1);auto r2=atlas.add(a1);auto r3=atlas.add(a1);
+        require(r1&&r2&&r3&&r1->x==0&&r2->x==3&&r3->x==0&&r3->y==2);
+        auto idx=atlas.indices(),mask=atlas.opacity();
+        for(auto r:{*r1,*r2,*r3})for(int y=0;y<r.height;++y)for(int x=0;x<r.width;++x){
+            auto at=(r.y+y)*atlas.width()+r.x+x,source=y*r.width+x;
+            require(idx[at]==a1.indices[source]&&mask[at]==a1.opaque[source]);
+        }
+        sc::Sprite large;large.width=8;large.height=8;large.indices.resize(64);large.opaque.resize(64);
+        require(!atlas.add(large)&&atlas.width()==6&&atlas.height()==4);
+        sc::pack::PaletteTable table;sc::Palette pal{};
+        require(table.intern(pal)==0&&table.intern(pal)==0);pal.known[0]=true;require(table.intern(pal)==1);
+        require(sc::pack::category(terrain)=="terrain"&&sc::pack::category(*spr)=="units");
+        require(sc::pack::stable_id(*spr,1)!=sc::pack::stable_id(*spr,2));
+        require(sc::pack::json("a\"b\n")=="\"a\\\"b\\u000a\"");
+        std::cout<<"Inventory, graphics, video and atlas tests passed\n";
     }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}
 }
