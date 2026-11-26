@@ -213,6 +213,14 @@ int main(){
         auto dataset=R"({"schema":"spellcross-dataset","version":1,"partial":false,"runtime_ready":false,"packages":[{"file":"common.pak","category":"common","records":1,"converted":1,"decoded":0,"raw":0,"failed":0,"containers":0}],"coverage_by_format":{"common/TXT":{"converted":1}},"atlas_metrics":{"frames":0,"pages":0,"source_pixels":0,"png_bytes":0}})";
         validate_dataset(dataset,{{"common.pak",summary}});
         entries["original.bin"].size=2;bool bad_range=false;try{validate_package(entries,"common");}catch(const std::exception&){bad_range=true;}require(bad_range);
+        entries["original.bin"].size=4;
+        entries["palette.rgb"].size=768;entries["palette.known"].size=256;
+        entries["i.png"]={12,4,4,{}};entries["m.png"]={12,4,4,{}};
+        entries["manifest.json"].json=R"({"schema":"spellcross-pak","version":1,"category":"units","partial":false,"records":[{"id":"a#1","name":"a","format":"FSU-SPRITE","status":"converted","original":{"entry":"original.bin","offset":0,"size":4},"payload":"frames.json"}],"graphics":["frames.json"],"palettes":[{"rgb":"palette.rgb","known":"palette.known"}]})";
+        entries["frames.json"].json=R"({"schema":"spellcross-atlas","version":1,"group":"a","pages":[{"indices":"i.png","opacity":"m.png"}],"frames":[{"id":"a#1","frame":0,"page":0,"rect":[1,1,3,3],"origin":[-3,4],"palette":0,"shadow_index":253,"trailing_bytes":0}]})";
+        auto graphics_summary=validate_package(entries,"units");require(graphics_summary.frames==1&&graphics_summary.pixels==9&&graphics_summary.png_bytes==24);
+        entries["m.png"].png_width=3;bool bad_atlas=false;try{validate_package(entries,"units");}catch(const std::exception&){bad_atlas=true;}require(bad_atlas);
+        bool duplicate=false;try{dataset_packages(R"({"schema":"spellcross-dataset","version":1,"version":1})");}catch(const std::exception&){duplicate=true;}require(duplicate);
         std::cout<<"Inventory, graphics, video, atlas, semantic, campaign, music and PAK validation tests passed\n";
     }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}
 }
