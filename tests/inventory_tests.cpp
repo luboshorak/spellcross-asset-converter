@@ -425,6 +425,38 @@ int main(){
             require(research_summary.game_references.size()==2&&research_summary.game_references[0].target=="77"&&research_summary.game_references[1].target=="124");
             require(research_summary.unreviewed_commands.at("research:FUTURECALL")==1);
             require(research_summary.definitions[0].ids==std::vector<std::string>{"6"});
+            // Real Czech tactical directives, including Unicode labels and
+            // percent syntax. Event IDs are local, not global unit types.
+            sc::Asset mission;mission.format="DEF";mission.name="COMMON.FS::M01_01A.DEF";
+            const std::string cz="MissionData {\n AddMissionObjective(DestroyAllUnits,Zni\xc4\x8d" "en\xc3\xad v\xc5\xa1" "ech jednotek)\n AddMissionObjective(SeePlace,648,Goal)\n AddSpecialEvent(SeePlace,648,01,100%)\n AddSpecialEvent(MissionStart,01,50%)\n NightMission()\n}\nEventData(1) {\n EventText(MSG0001)\n}\n";
+            auto mission_json=sc::script_definition(mission,B(cz.begin(),cz.end()),true);
+            require(mission_json&&mission_json->find("Zni\xc4\x8d" "en\xc3\xad v\xc5\xa1" "ech jednotek")!=std::string::npos);
+            require(mission_json->find("\"source_encoding\":\"UTF-8\"")!=std::string::npos);
+            Entries mission_entries;
+            mission_entries["original.bin"].size=cz.size();
+            mission_entries["records/1/script.json"].json=*mission_json;
+            mission_entries["records/1/script.json"].size=mission_json->size();
+            mission_entries["manifest.json"].json="{\"schema\":\"spellcross-pak\",\"version\":1,\"category\":\"common\",\"partial\":false,\"records\":[{\"id\":\"mission#1\",\"name\":\"COMMON.FS::M01_01A.DEF\",\"format\":\"DEF\",\"status\":\"converted\",\"original\":{\"entry\":\"original.bin\",\"offset\":0,\"size\":"+std::to_string(cz.size())+"},\"payload\":\"records/1/script.json\"}],\"graphics\":[],\"palettes\":[]}";
+            auto mission_summary=validate_package(mission_entries,"common");
+            require(mission_summary.unreviewed_commands.empty());
+            require(mission_summary.metadata_coverage.at("objective:DESTROYALLUNITS")==1);
+            require(mission_summary.metadata_coverage.at("objective:SEEPLACE")==1);
+            require(mission_summary.metadata_coverage.at("trigger:SEEPLACE")==1);
+            require(mission_summary.metadata_coverage.at("trigger:MISSIONSTART")==1);
+            require(mission_summary.metadata_coverage.at("night-mission")==1);
+            require(mission_summary.game_references.size()==3);
+            require(mission_summary.game_references[0].scope=="tactical-event:mission#1"&&mission_summary.game_references[0].target=="1");
+            require(mission_summary.definitions[0].ids==std::vector<std::string>{"1"});
+            linked["common.pak"].game_references.push_back({"map#1","line 4 MISSIONENDBADTEXT[0]","text","T01_01A.BAD","TEXTS.FS"});
+            require(audit_report(map_root,linked).references_tsv.find("T01_01A.BAD\tmissing-end-text\t0")!=std::string::npos);
+            require(audit_report(partial_root,linked).references_tsv.find("T01_01A.BAD\tnot-in-selection\t0")!=std::string::npos);
+            // Static-only one-frame attack versus actual excessive frame count.
+            linked["terrain.pak"].atlas_groups.push_back({"UNITS.FSU::SMOB1","frames.json",16,true,1,16,0,0});
+            linked["common.pak"].game_references.push_back({"map#1","unit[7].light_animation","atlas-group","SMOB1","UNITS.FSU",1});
+            linked["common.pak"].game_references.push_back({"map#1","unit[7].armor_animation","atlas-group","SMOB1","UNITS.FSU",2});
+            const auto static_report=audit_report(map_root,linked);
+            require(static_report.references_tsv.find("SMOB1\tstatic-frame-reference\t1")!=std::string::npos);
+            require(static_report.references_tsv.find("SMOB1\tframe-limit-review\t1")!=std::string::npos);
         }
         require(safe_entry("graphics/1/page.png")&&!safe_entry("../bad")&&!safe_entry("C:/bad"));
         const unsigned char crc_test[]="123456789";require((crc32_update(0xffffffffu,crc_test,9)^0xffffffffu)==0xcbf43926u);
