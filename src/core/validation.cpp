@@ -239,10 +239,10 @@ static void class_metadata(PackageSummary& out,const AuditRecord& row,const J& m
 static void script_metadata(PackageSummary& out,const AuditRecord& row,const J& m){
     schema(m,"spellcross-script");
     const auto name=game_leaf(row.name);
-    std::string domain=name.starts_with("LEVEL_")?"strategy":name=="RESEARCH.DEF"?"research":
+    std::string domain=name=="SLIDE.DEF"?"slideshow":name.starts_with("LEVEL_")?"strategy":name=="RESEARCH.DEF"?"research":
         name=="BONUSES.DEF"?"experience":name=="FORMACIE.DEF"?"formation":name=="UPGRADES.DEF"?"upgrade":
         name=="HODNOSTI.DEF"?"commander":name=="UPGROUPS.DEF"?"upgrade-group":name=="MUSIC.DEF"?"music":
-        name=="TUTORIAL.DEF"||row.format=="TUT"?"tutorial":name.starts_with("M")&&name.ends_with(".DEF")?"tactical":"other";
+        name=="TUTORIAL.DEF"||row.format=="TUT"?"tutorial":(name.starts_with("M")||name.starts_with("TUT"))&&name.ends_with(".DEF")?"tactical":"other";
     std::vector<std::size_t> stack;
     std::vector<std::size_t> local;
     for(const auto& rec:m.at("records").arr()){
@@ -274,7 +274,7 @@ static void script_metadata(PackageSummary& out,const AuditRecord& row,const J& 
     std::map<std::string,std::vector<std::string>> definitions;
     for(auto pos:local){
         const auto& block=out.game_blocks[pos];
-        if(block.keyword=="MISSION"&&domain=="strategy")definitions["mission:"+row.id].push_back(game_upper(block.key));
+        if(block.keyword=="MISSION"&&(domain=="strategy"||domain=="tutorial"))definitions["mission:"+row.id].push_back(game_upper(block.key));
         if(block.keyword=="EVENT"&&domain=="strategy")definitions["event:"+row.id].push_back(game_id(block.key));
         if(block.keyword=="EVENTDATA"&&domain=="tactical")definitions["tactical-event:"+row.id].push_back(game_id(block.key));
         if(block.keyword=="ITEM"&&domain=="research")definitions["research"].push_back(game_id(block.key));
@@ -292,8 +292,27 @@ static void script_metadata(PackageSummary& out,const AuditRecord& row,const J& 
                 game_ref(out,row,"line "+std::to_string(cmd.line)+" "+k+"["+std::to_string(i)+"]",kind,target,scope);
             };
             auto all=[&](std::size_t first,const std::string& scope){for(auto i=first;i<args.size();++i)at(i,"definition",scope,true);};
+            auto unsigned_arg=[&](std::size_t i){
+                if(i>=args.size())return false;
+                std::uint64_t n{};auto p=std::from_chars(args[i].data(),args[i].data()+args[i].size(),n);
+                return p.ec==std::errc{}&&p.ptr==args[i].data()+args[i].size();
+            };
             bool reviewed=true;
-            if(k=="MISSIONMAP")at(0,"map","COMMON.FS");
+            if(domain=="slideshow"&&k=="ADDPICTURE"){
+                if(args.size()==2&&unsigned_arg(0))at(1,"slide-image","DATA/SLIDE");
+                else reviewed=false;
+            }else if(domain=="tutorial"&&(k=="CENTERONSQUARE"||k=="LCLICKONSQUARE"||k=="SEESQUARE"||k=="WAITOBJDEST")){
+                reviewed=args.size()==1&&unsigned_arg(0);
+            }else if(domain=="tutorial"&&k=="UNITTOSQUARE"){
+                reviewed=args.size()==2&&unsigned_arg(0)&&unsigned_arg(1);
+            }else if(domain=="tutorial"&&k=="WAITFORINPUT"){
+                reviewed=args.size()==1&&!args[0].empty();
+            }else if(domain=="tutorial"&&k=="TUTORIALEND"){
+                reviewed=args.empty();
+            }else if(domain=="tutorial"&&(k=="ENDOKMISSION"||k=="ENDBADMISSION")){
+                if(args.size()==1)at(0,"definition","mission:"+row.id);
+                else reviewed=false;
+            }else if(k=="MISSIONMAP")at(0,"map","COMMON.FS");
             else if(k=="ADDUNIT"||k=="ADDSPECIALUNIT")at(1,"definition","unit",true);
             else if(domain=="tactical"&&k=="ADDMISSIONOBJECTIVE"){
                 // Objective arguments are mission instance IDs or linear map
@@ -536,6 +555,19 @@ PackageSummary validate_package(const Entries& entries,std::string_view expected
             }
             map_metadata(out,row,m);
             row.kind="tactical-map";row.notes="Eight layer metadata; see game reference audit for cross-resource links";
+        }else if(p.ends_with("/quick-help.json")){
+            auto h=parse(e.json);schema(h,"spellcross-quick-help");
+            auto& screen=h.at("screen").arr();auto& regions=h.at("regions").arr();
+            if(row.format!="QH"||screen.size()!=2||screen[0].num()!=640||screen[1].num()!=480||
+               regions.empty()||h.at("region_count").num()!=regions.size())fail("Invalid quick-help header");
+            for(const auto& region:regions){
+                auto& rect=region.at("rect").arr();
+                if(rect.size()!=4||region.at("text").str().empty())fail("Invalid quick-help region");
+                auto x=rect[0].num(),y=rect[1].num(),w=rect[2].num(),h=rect[3].num();
+                if(x>=640||y>=480||!w||!h||w>640-x||h>480-y)fail("Quick-help rectangle outside screen");
+            }
+            row.kind="quick-help";row.assessment="modern-payload";row.notes="Original screen rectangles and labels";
+            out.metadata_coverage["quick-help-regions"]+=regions.size();
         }else if(p.ends_with("/movie.json")){
             auto m=parse(e.json);schema(m,"spellcross-movie");
             auto loc=relative(p,m.at("entry").str());
@@ -845,7 +877,10 @@ static void json_target(std::ostream& o,const Target& t){
      <<",\"entry\":"<<catalog_quote(t.entry)<<",\"kind\":"<<catalog_quote(t.kind)<<"}";
 }
 static GameAudit game_audit(std::string_view root,const std::map<std::string,PackageSummary>& packages){
-    const bool partial=parse(root).at("partial").boolean();
+    const auto dataset=parse(root);
+    const bool partial=dataset.at("partial").boolean();
+    const auto edition=dataset.get("edition_language");
+    bool music_archive=false;
     TargetIndex index;
     TargetIndex inventory_index;
     std::map<std::string,std::uint64_t> coverage,unknown,results;
@@ -869,6 +904,7 @@ static GameAudit game_audit(std::string_view root,const std::map<std::string,Pac
             inventory_index[{"source",scope,leaf}].push_back(t);
             const auto base=game_stem(leaf);
             if(base!=leaf)inventory_index[{"source",scope,base}].push_back(t);
+            if(leaf=="MUSIC.FS"||scope=="MUSIC.FS")music_archive=true;
             const bool image=!r.atlas_entry.empty()&&(r.kind=="indexed-atlas"||r.kind=="synthetic-placeholder");
             if(scope=="T11.FS"||scope=="PUST.FS"||scope=="DEVAST.FS"){
                 if(r.format=="DTA"&&(image||r.status=="raw"||r.status=="failed"))add("terrain-sprite");
@@ -888,6 +924,8 @@ static GameAudit game_audit(std::string_view root,const std::map<std::string,Pac
                 if(r.format=="CAN"||r.format=="DPK"||r.format=="DP2"||r.format=="SMK")add("movie");
             }
             if(scope=="TEXTS.FS")add("text",false);
+            if(scope.empty()&&r.format=="PCX"&&game_upper(r.name).starts_with("DATA/SLIDE/"))
+                put("slide-image","DATA/SLIDE",leaf,t);
             if(scope.empty()&&r.format=="SMK"&&p.category=="movies"){
                 put("movie","MOVIE.FS",leaf,t);put("movie","MOVIE.FS",game_stem(leaf),t);
             }
@@ -966,7 +1004,8 @@ static GameAudit game_audit(std::string_view root,const std::map<std::string,Pac
                     it=inventory_index.find({"source","",alias_key(ref.target)});
                 diagnosis=it==inventory_index.end()?"resource-not-in-exported-inventory":"resource-listed-but-not-indexed-for-kind";
             }
-        }else if(status=="static-frame-reference")diagnosis="static-direction-set-single-frame; runtime-selection-unverified";
+        }else if(status=="edition-absent")diagnosis="owner-confirmed EN retail CD has no music archive";
+        else if(status=="static-frame-reference")diagnosis="static-direction-set-single-frame; runtime-selection-unverified";
         ++results[status];
         if(!first)json<<",\n";first=false;
         json<<"{\"source\":"<<catalog_quote(ref.source)<<",\"field\":"<<catalog_quote(ref.field)
@@ -999,7 +1038,9 @@ static GameAudit game_audit(std::string_view root,const std::map<std::string,Pac
             // absent mandatory assets and do not synthesize source text.
             const bool end_text=ref.kind=="text"&&ref.scope=="TEXTS.FS"&&
                 (ref.field.ends_with(" MISSIONENDOKTEXT[0]")||ref.field.ends_with(" MISSIONENDBADTEXT[0]"));
-            status=!partial&&end_text?"missing-end-text":missing;
+            const bool absent_en_music=!partial&&edition&&edition->str()=="en"&&!music_archive&&
+                ref.kind=="music"&&ref.scope=="MUSIC.FS";
+            status=absent_en_music?"edition-absent":!partial&&end_text?"missing-end-text":missing;
         }
         else if(candidates.size()>1)status="ambiguous";
         else if(candidates[0].placeholder)status="placeholder";
@@ -1074,7 +1115,7 @@ static GameAudit game_audit(std::string_view root,const std::map<std::string,Pac
     report<<"\nGAME METADATA / REFERENCE AUDIT (known rules only)\n";
     for(const auto& [k,n]:coverage)report<<k<<": "<<n<<"\n";
     report<<"\nREFERENCE RESULTS\n";
-    for(auto k:{"resolved","optional-empty","placeholder","missing","not-in-selection","ambiguous","unsupported-target","frame-limit-review","context-shape-review","static-frame-reference","missing-end-text"})
+    for(auto k:{"resolved","optional-empty","placeholder","missing","not-in-selection","ambiguous","unsupported-target","frame-limit-review","context-shape-review","static-frame-reference","missing-end-text","edition-absent"})
         report<<k<<": "<<count(results,k)<<"\n";
     report<<"\nMissing-end-text denotes absent referenced debrief messages with a documented game-side fallback.\n"
           <<"Missing diagnoses compare with the exported inventory only, not independent source-byte verification.\n"
