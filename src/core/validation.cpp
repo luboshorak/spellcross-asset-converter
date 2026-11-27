@@ -847,6 +847,7 @@ static void json_target(std::ostream& o,const Target& t){
 static GameAudit game_audit(std::string_view root,const std::map<std::string,PackageSummary>& packages){
     const bool partial=parse(root).at("partial").boolean();
     TargetIndex index;
+    TargetIndex inventory_index;
     std::map<std::string,std::uint64_t> coverage,unknown,results;
     std::vector<std::pair<std::string,const AtlasGroup*>> groups;
     std::vector<const FsuContextRecord*> contexts;
@@ -863,6 +864,11 @@ static GameAudit game_audit(std::string_view root,const std::map<std::string,Pac
                 put(kind,scope,leaf,t);auto base=game_stem(leaf);
                 if(stem&&base!=leaf)put(kind,scope,base,t);
             };
+            // Keep a separate index of every original record so a missing
+            // typed link can be distinguished from an unindexed conversion.
+            inventory_index[{"source",scope,leaf}].push_back(t);
+            const auto base=game_stem(leaf);
+            if(base!=leaf)inventory_index[{"source",scope,base}].push_back(t);
             const bool image=!r.atlas_entry.empty()&&(r.kind=="indexed-atlas"||r.kind=="synthetic-placeholder");
             if(scope=="T11.FS"||scope=="PUST.FS"||scope=="DEVAST.FS"){
                 if(r.format=="DTA"&&(image||r.status=="raw"||r.status=="failed"))add("terrain-sprite");
@@ -945,14 +951,29 @@ static GameAudit game_audit(std::string_view root,const std::map<std::string,Pac
         json<<"]}";
     }
     json<<"],\"references\":[\n";first=true;
-    tsv<<"source\tfield\tkind\tscope\ttarget\tresult\tcandidate_count\tcandidate_locators\n";
+    tsv<<"source\tfield\tkind\tscope\ttarget\tresult\tcandidate_count\tcandidate_locators\tdiagnosis\n";
     auto emit=[&](const GameReference& ref,const std::string& status,const std::vector<Target>& candidates){
+        std::string diagnosis;
+        if(status=="missing"||status=="missing-end-text"){
+            if(empty_target(alias_key(ref.target)))diagnosis="required-value-empty";
+            else if(ref.kind=="definition")diagnosis="definition-not-found";
+            else if(ref.kind=="atlas-group")diagnosis="atlas-group-not-found";
+            else{
+                auto key=std::make_tuple(std::string("source"),ref.scope,alias_key(ref.target));
+                auto it=inventory_index.find(key);
+                // Movie files can also be loose files in EN distributions.
+                if(it==inventory_index.end()&&ref.kind=="movie")
+                    it=inventory_index.find({"source","",alias_key(ref.target)});
+                diagnosis=it==inventory_index.end()?"resource-not-in-exported-inventory":"resource-listed-but-not-indexed-for-kind";
+            }
+        }else if(status=="static-frame-reference")diagnosis="static-direction-set-single-frame; runtime-selection-unverified";
         ++results[status];
         if(!first)json<<",\n";first=false;
         json<<"{\"source\":"<<catalog_quote(ref.source)<<",\"field\":"<<catalog_quote(ref.field)
             <<",\"kind\":"<<catalog_quote(ref.kind)<<",\"scope\":"<<catalog_quote(ref.scope)
             <<",\"target\":"<<catalog_quote(ref.target)<<",\"result\":"<<catalog_quote(status);
         if(ref.frame_limit)json<<",\"frame_limit\":"<<ref.frame_limit;
+        if(!diagnosis.empty())json<<",\"diagnosis\":"<<catalog_quote(diagnosis);
         json<<",\"candidates\":[";
         std::string locators;
         for(std::size_t i=0;i<candidates.size();++i){
@@ -962,7 +983,7 @@ static GameAudit game_audit(std::string_view root,const std::map<std::string,Pac
         }
         json<<"]}";
         tsv<<audit_cell(ref.source)<<'\t'<<audit_cell(ref.field)<<'\t'<<audit_cell(ref.kind)<<'\t'
-           <<audit_cell(ref.scope)<<'\t'<<audit_cell(ref.target)<<'\t'<<status<<'\t'<<candidates.size()<<'\t'<<audit_cell(locators)<<'\n';
+           <<audit_cell(ref.scope)<<'\t'<<audit_cell(ref.target)<<'\t'<<status<<'\t'<<candidates.size()<<'\t'<<audit_cell(locators)<<'\t'<<audit_cell(diagnosis)<<'\n';
     };
     for(const auto& [file,p]:packages)for(const auto& ref:p.game_references){
         const auto key=alias_key(ref.target);
@@ -1055,6 +1076,10 @@ static GameAudit game_audit(std::string_view root,const std::map<std::string,Pac
     report<<"\nREFERENCE RESULTS\n";
     for(auto k:{"resolved","optional-empty","placeholder","missing","not-in-selection","ambiguous","unsupported-target","frame-limit-review","context-shape-review","static-frame-reference","missing-end-text"})
         report<<k<<": "<<count(results,k)<<"\n";
+    report<<"\nMissing-end-text denotes absent referenced debrief messages with a documented game-side fallback.\n"
+          <<"Missing diagnoses compare with the exported inventory only, not independent source-byte verification.\n"
+          <<"Static-frame-reference describes a single-frame attack using a static azimuth set; runtime selection is not certified.\n"
+          <<"Tactical objective and trigger syntax is reviewed; runtime unit-instance targets and map-position semantics are not certified.\n";
     report<<"\nUNREVIEWED SCRIPT COMMANDS (not automatically treated as valid)\n";
     for(const auto& [k,n]:unknown)report<<k<<": "<<n<<"\n";
     report<<"See game-metadata.json and game-references.tsv for exact source fields and candidate locators.\n"
