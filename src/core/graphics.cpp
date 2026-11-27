@@ -149,7 +149,7 @@ static bool in_archive(const Asset& a,std::string_view archive){
     return a.member&&block==archive;
 }
 bool is_text_asset(const Asset& a,std::span<const std::uint8_t> d){
-    if(d.empty())return false;
+    if(d.empty())return in_archive(a,"TEXTS.FS")&&a.format=="BAD";
     // Retail COMMON.FS stores DOS filenames and identifiers in LZ streams.
     // Require printable ASCII in these specifically identified records.
     const auto name=upper_name(a);
@@ -157,6 +157,8 @@ bool is_text_asset(const Asset& a,std::span<const std::uint8_t> d){
        (name=="C02.LZ"||name=="C03.LZ"||name=="C04.LZ"||name=="C05.LZ"||name=="ELMONDO.LZ")){
         return d.size()<=260&&std::all_of(d.begin(),d.end(),[](auto b){return b>=32&&b<=126;});
     }
+    if(a.format=="LZ"&&in_archive(a,"COMMON.FS")&&name=="CHEATS.LZ")
+        return d.size()<=4096&&std::all_of(d.begin(),d.end(),[](auto b){return (b>=32&&b<=126)||b==10||b==13;});
     bool named=a.format=="DEF"||a.format=="TXT"||a.format=="BRF"||a.format=="TUT"||
         a.format=="ENG"||a.format=="CZE"||a.format=="POL"||a.format=="ITA"||
         a.format=="CZ"||a.format=="EN"||a.format=="PL"||a.format=="IT"||
@@ -180,6 +182,7 @@ static std::optional<RawUi> raw_ui(const Asset& a){
         return RawUi{85,79,false,"frame"};
     if(a.format=="LZ"&&in_archive(a,"INSTALL.FS")){
         if(n=="BAR.LZ")return RawUi{320,38,false,"frame"};
+        if(n=="MASK.LZ")return RawUi{604,272,false,"frame"};
         if(n=="BTN_DOWN.LZ"||n=="BTN_UP.LZ")return RawUi{20,20,false,"frame"};
     }
     // The RAM1/RAM2 frame family shares the same geometry in the
@@ -193,6 +196,9 @@ static std::optional<RawUi> raw_ui(const Asset& a){
     }
     if(a.member&&!block_name(a).empty()&&!in_archive(a,"COMMON.FS"))return std::nullopt;
     // Dimensions verified by reconstructing the English retail pixel arrays.
+    if(a.format=="LZ"&&in_archive(a,"COMMON.FS")&&n.size()==8&&n.starts_with("RAD")&&
+       n[3]>='0'&&n[3]<='4'&&n[4]>='0'&&n[4]<='9'&&n.ends_with(".LZ"))
+        return RawUi{78,76,false,"tactical"};
     if(n=="DIFFIC.LZ")return RawUi{249,152,true,"MAINMENU.PAL"};
     if(n=="IL_CISLA.LZ")return RawUi{40,7,true,"tactical"};
     if(n=="RES_BAR.LZ")return RawUi{260,16,false,"strategy"};
@@ -287,6 +293,17 @@ Inventory palette_inventory(const Inventory& inv){
 }
 Palette asset_palette(const Inventory& inv,const Asset& a,const Palette& tactical){
     auto n=upper_name(a);
+    if(a.format=="PCX"){
+        auto d=decode_asset(a);
+        if(d.size()<897||d[0]!=10||d[2]!=1||d[3]!=8||d[65]!=1||d[d.size()-769]!=12)
+            throw std::runtime_error("Unsupported indexed PCX palette");
+        Palette p{};
+        std::copy(d.end()-768,d.end(),p.rgb.begin());p.known.fill(true);return p;
+    }
+    if(a.format=="LZ"&&in_archive(a,"INSTALL.FS")&&n=="MASK.LZ"){
+        Palette p{};for(unsigned i=0;i<256;++i)p.rgb[i*3]=p.rgb[i*3+1]=p.rgb[i*3+2]=i;
+        p.known.fill(true);return p;
+    }
     if(windows_icon_asset(a)){
         auto d=decode_asset(a);auto ico=windows_icon(d);Palette p{};
         for(unsigned i=0;i<ico.colors;++i){
@@ -448,6 +465,32 @@ std::optional<Sprite> decode_image(const Asset& a,std::span<const std::uint8_t> 
            std::uint64_t(s.width)*s.height>16000000)throw std::runtime_error("Invalid image dimensions");
         s.indices.resize(std::size_t(s.width)*s.height);s.opaque.resize(s.indices.size());
     };
+    if(a.format=="PCX"){
+        // Retail indexed PCX: one 8-bit plane, RLE, exact 256-color tail.
+        if(d.size()<897||d[0]!=10||d[2]!=1||d[3]!=8||d[65]!=1||d[d.size()-769]!=12)
+            throw std::runtime_error("Unsupported indexed PCX header");
+        const auto xmin=u16(4),ymin=u16(6),xmax=u16(8),ymax=u16(10),stride=u16(66);
+        if(xmax<xmin||ymax<ymin)throw std::runtime_error("Invalid PCX bounds");
+        s.width=int(xmax-xmin+1);s.height=int(ymax-ymin+1);allocate();
+        if(stride<unsigned(s.width)||stride>8192)throw std::runtime_error("Invalid PCX row stride");
+        std::size_t p=128,end=d.size()-769;
+        for(int y=0;y<s.height;++y){
+            unsigned x=0;
+            while(x<stride){
+                if(p>=end)throw std::runtime_error("Truncated PCX row");
+                unsigned value=d[p++],run=1;
+                if((value&0xc0)==0xc0){
+                    run=value&63;if(!run||p>=end)throw std::runtime_error("Invalid PCX run");
+                    value=d[p++];
+                }
+                if(run>stride-x)throw std::runtime_error("PCX run crosses row");
+                for(unsigned j=0;j<run;++j,++x)if(x<unsigned(s.width))
+                    s.indices[std::size_t(y)*s.width+x]=static_cast<std::uint8_t>(value);
+            }
+        }
+        if(p!=end)throw std::runtime_error("Unexpected PCX bytes before palette");
+        std::fill(s.opaque.begin(),s.opaque.end(),255);return s;
+    }
     if(a.format=="CLK"){
         if(d.size()<4)throw std::runtime_error("Truncated CLK header");
         s.height=u16(0);s.width=u16(2);allocate();
@@ -501,10 +544,14 @@ std::optional<Sprite> decode_image(const Asset& a,std::span<const std::uint8_t> 
     auto n=upper_name(a);
     if(auto ui=raw_ui(a)){
         s.width=ui->w;s.height=ui->h;opaque_zero=!ui->transparent;
+        if(n=="BAR.LZ"&&in_archive(a,"INSTALL.FS")&&d.size()==342u*32){s.width=342;s.height=32;}
         if(n=="MAINM_BG.LZ"&&d.size()>=255u*237&&d.size()<=255u*237+64)s.height=237;
         // Retail localized difficulty dialog differs in height.
         if(n=="DIFFIC.LZ"&&d.size()>=249u*180&&d.size()<=249u*180+2)s.height=180;
         auto expected=std::size_t(s.width)*s.height;
+        if(n=="MASK.LZ"&&in_archive(a,"INSTALL.FS")&&
+           !std::all_of(d.begin(),d.end(),[](auto b){return b==0||b==255;}))return std::nullopt;
+        if(n.starts_with("RAD")&&n.size()==8&&in_archive(a,"COMMON.FS")&&d.size()!=expected)return std::nullopt;
         if(ui->palette=="frame"&&d.size()!=expected)return std::nullopt;
         if(d.size()<expected||d.size()>expected+64)throw std::runtime_error("Unexpected known UI image size");
     }else if(in_archive(a,"INFO.FS")&&a.format=="LZ"){
