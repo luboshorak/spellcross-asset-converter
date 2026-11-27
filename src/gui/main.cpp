@@ -320,6 +320,16 @@ class Frame final : public wxFrame {
         for(auto b:data)out+=wxUniChar(static_cast<unsigned long>(b<128?b:cp[b-128]));
         return out;
     }
+    std::optional<std::string> structured_script(const sc::Asset& a,const sc::Bytes& data){
+        auto original=sc::script_definition(a,data);
+        if(!original)return std::nullopt;
+        const auto decoded=decode_text(data,&a);
+        const auto utf=decoded.utf8_str();
+        sc::Bytes bytes(utf.data(),utf.data()+utf.length());
+        auto result=sc::script_definition(a,bytes,true);
+        if(!result)throw std::runtime_error("Decoded script syntax could not be preserved");
+        return result;
+    }
     static std::string utf8_json(std::string_view s){
         std::string out="\"";constexpr char hex[]="0123456789abcdef";
         for(unsigned char b:s){if(b=='"'||b=='\\'){out+='\\';out+=char(b);}else if(b<32){out+="\\u00";out+=hex[b>>4];out+=hex[b&15];}else out+=char(b);}
@@ -554,7 +564,7 @@ class Frame final : public wxFrame {
             }else if(auto units=sc::unit_definitions(*a,full)){
                 structured_view->SetValue(w(*units));preview_tabs->SetSelection(5);
                 details+="\nDecoded unit definitions (source byte strings).";
-            }else if(auto script=sc::script_definition(*a,full)){
+            }else if(auto script=structured_script(*a,full)){
                 structured_view->SetValue(w(*script));text_view->SetValue(decode_text(full,a));preview_tabs->SetSelection(4);
                 details+="\nOrdered script JSON is also available in Structured JSON.";
             }else if(auto table=sc::class_definition(*a,full)){
@@ -1086,7 +1096,7 @@ class Frame final : public wxFrame {
                                     derived.emplace_back("ground.u16le",std::move(map->ground));
                                     derived.emplace_back("objects.u8x2",std::move(map->objects));
                                     status="converted";detail="Eight map layers, resource references and original trailing bytes";payload=base+"map.json";
-                                }else if(auto script=sc::script_definition(a,data)){
+                                }else if(auto script=structured_script(a,data)){
                                     add_text("script.json",*script);
                                     // Companion text is convenient for editing; the authoritative
                                     // syntax JSON and original source are retained independently.
