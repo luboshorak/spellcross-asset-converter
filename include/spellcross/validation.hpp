@@ -57,8 +57,11 @@ struct PackageSummary {
     std::vector<FsuContextRecord> fsu_contexts;
     std::map<std::string,std::uint64_t> metadata_coverage;
     std::map<std::string,std::uint64_t> unreviewed_commands;
+    std::string converter_version;
 };
 struct DatasetPackage {std::string file,category;};
+// Translate byte-preserving manifest IDs into their parsed UTF-8 form.
+std::string source_name_utf8(std::string_view bytes);
 bool safe_entry(std::string_view);
 std::vector<DatasetPackage> dataset_packages(std::string_view);
 PackageSummary validate_package(const Entries&,std::string_view expected_category);
