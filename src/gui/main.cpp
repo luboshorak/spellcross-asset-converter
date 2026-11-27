@@ -1346,7 +1346,7 @@ class Frame final : public wxFrame {
             progress.Update(static_cast<int>(total));
             auto summary=number(packages.size())+" PAK packages\n"+number(converted)+" converted, "+number(decoded)+" decoded, "+number(raw)+" raw, "+number(failed)+" failed, "+number(containers)+" original containers.\n"+
                 number(frames)+" atlas frames / "+number(pages)+" pages; "+number(png_total)+" PNG bytes.\n"+
-                "Draft data format; see game-metadata.json, game-references.tsv and pak-audit.txt for reference coverage and remaining work.\n"+w(sc::utf8(dest));
+                "PAK v1 standalone export; see game-metadata.json, game-references.tsv and pak-audit.txt for reference coverage. Runtime parity is not certified.\n"+w(sc::utf8(dest));
             log(summary);wxMessageBox(summary,"Modern conversion finished",wxOK|wxICON_INFORMATION,this);
         }catch(const std::exception& e){
             if(!dest.empty()){std::error_code ec;std::filesystem::remove_all(dest,ec);if(ec)log("ERROR: Could not remove incomplete PAK output");}

@@ -35,3 +35,28 @@ Combined 0.9.13 / 0.9.14 implementation (version 0.9.14): explicit unit flags an
 0.9.14.2 CZ re-export: 32,643 records, zero unresolved formats, 52,616 references, zero unreviewed calls, 20 missing outside debriefing, 73 absent debrief messages and 6 static-frame references. EN export: 33,291 records, 82 legacy-required, 32,225 frames, 164 FSU groups, 79 tactical maps and 73 unreviewed calls. Owner confirmed EN retail CD has no music and CZ has no context help. 0.9.14.3 implements PCX, QH, RAD00–49, EN installer BAR/MASK, cheat text, zero-byte BAD and installer archival roles; reviews EN tutorial/slideshow syntax and distinguishes edition-absent music. Verify new full exports of both editions; missing source links are not silently changed. Radar/installer geometry inferred from pixel reconstruction; palette/display and timing parity remain unverified. SR untouched.
 
 0.9.14.3 EN owner export passed: 33,291 records, zero unresolved formats, zero unreviewed commands, 32,288 frames, 112 quick-help regions, 21 missing references outside debriefing, 69.970 s. CZ acceptance at 0.9.14.2 remains 32,643 records and zero unresolved formats. Across both editions 65,934 inventory records. These are owner-provided export reports, not independent review of whole PAK archives. 0.9.15 adds version stamping, exact streaming input-byte comparison and logical source range validation during export, plus a native modern-payload reader example with a fixture independent of original containers. Final gate: successful CI and full CZ and EN exports from the same 0.9.15 build, with original source comparison passed and expected coverage retained. 1.0.0 is a standalone converter release, not a declaration of runtime gameplay parity. No SR integration or Build.ps1 changes.
+
+## 1.0.0 acceptance decision
+
+Full Czech and English export reports from 0.9.15 were supplied on 2026-11-27. Windows and Linux CI passed on PR #31 (run 45971709385). Both exports report zero scan warnings, successful exact streamed original-source comparison (physical entries and logical ranges), inventory match, catalog and game-metadata validation, zero unresolved formats, and zero unreviewed script commands. Independent inspection of the supplied audit ZIPs confirmed ZIP CRC integrity, unique catalog IDs, matching inventory totals and reference counts. The full PAK archives and original ISO files were not supplied for independent byte verification.
+
+| Metric | CZ | EN |
+|---|---:|---:|
+| Records | 32643 | 33291 |
+| Converted | 32576 | 33232 |
+| Legacy-only | 52 | 45 |
+| Containers | 14 | 13 |
+| Synthetic placeholders | 1 | 1 |
+| Atlas frames | 31332 | 32288 |
+| Atlas pages | 226 | 272 |
+| Original source entry bytes | 454155398 | 398613835 |
+| References | 52616 | 40332 |
+| Resolved | 51454 | 39321 |
+| Optional-empty | 1063 | 914 |
+| Missing | 20 | 21 |
+| Missing-end-text | 73 | 56 |
+| Static-frame-reference | 6 | 6 |
+| Edition-absent | 0 | 14 |
+| Full export seconds | 96.295 | 69.756 |
+
+The standalone release acceptance gate is met on the tested editions. 1.0.0 is a version/documentation/audit wording change only; there are no decoder or schema changes from 0.9.15. Final release-branch CI is required before merging/tagging. Runtime-ready remains false; all remaining gameplay semantics, original reference discrepancies, FSA provenance and animation timing limitations remain explicit. Integration into SR requires separate owner authorization. No SR or Build.ps1 changes.
