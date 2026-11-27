@@ -564,6 +564,8 @@ class Frame final : public wxFrame {
             }else if(auto units=sc::unit_definitions(*a,full)){
                 structured_view->SetValue(w(*units));preview_tabs->SetSelection(5);
                 details+="\nDecoded unit definitions (source byte strings).";
+            }else if(auto help=sc::quick_help(*a,full)){
+                structured_view->SetValue(w(*help));text_view->SetValue(decode_text(full,a));preview_tabs->SetSelection(5);
             }else if(auto script=structured_script(*a,full)){
                 structured_view->SetValue(w(*script));text_view->SetValue(decode_text(full,a));preview_tabs->SetSelection(4);
                 details+="\nOrdered script JSON is also available in Structured JSON.";
@@ -1074,7 +1076,9 @@ class Frame final : public wxFrame {
                             }else if(a.size<=64u*1024u*1024u){
                                 auto data=sc::decode_asset(a);
                                 auto music=sc::music_kind(data);
-                                if(auto table=sc::retail_table(a,data)){
+                                if(auto help=sc::quick_help(a,data)){
+                                    add_text("quick-help.json",*help);status="converted";detail="Original 640x480 context-help rectangles and labels";payload=base+"quick-help.json";
+                                }else if(auto table=sc::retail_table(a,data)){
                                     add_text("retail-table.json",table->json);status="converted";detail="Retail table: "+table->kind;payload=base+"retail-table.json";
                                 }else if(auto rows=sc::language_table(a,data)){
                                     add_text("language.json",localization_json(a,*rows));
@@ -1141,7 +1145,7 @@ class Frame final : public wxFrame {
                                     synthetic=true;images.push_back(std::move(*placeholder));
                                 }else if(auto im=sc::decode_image(a,data))images.push_back(std::move(*im));
                                 else if(sc::is_text_asset(a,data)){
-                                    const auto decoded_text=decode_text(narrative(a)?sc::narrative_display(data):data,&a);auto utf=decoded_text.utf8_str();add_text("text.txt",std::string(utf.data(),utf.length()));
+                                    const auto decoded_text=decode_text(narrative(a)?sc::narrative_display(data):data,&a);auto utf=decoded_text.utf8_str();add_text("text.txt",utf.length()?std::string(utf.data(),utf.length()):std::string{});
                                     status="converted";detail="UTF-8 text";payload=base+"text.txt";
                                 }else if(a.format=="PAL"&&data.size()>=3&&data.size()<=768&&data.size()%3==0){
                                     derived.emplace_back("palette.rgb",std::move(data));status="converted";detail="Original RGB triples";payload=base+"palette.rgb";
