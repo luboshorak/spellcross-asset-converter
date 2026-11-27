@@ -9,10 +9,15 @@
 #include <algorithm>
 #include <array>
 #include <filesystem>
+#include <fstream>
+#include <map>
 #include <memory>
 #include <stdexcept>
 namespace sc::pak_io {
-inline sc::validation::Entries read_pak(const std::filesystem::path& filename){
+// The source map is supplied only during export, not trusted from a
+// manifest. Each original physical entry is compared once, streaming.
+using OriginalSources=std::map<std::string,const sc::Asset*>;
+inline sc::validation::Entries read_pak(const std::filesystem::path& filename,const OriginalSources* sources=nullptr){
     using namespace sc::validation;
     if(!std::filesystem::is_regular_file(filename)||std::filesystem::is_symlink(filename))
         throw std::runtime_error("Missing or nonregular PAK file");
@@ -21,7 +26,8 @@ inline sc::validation::Entries read_pak(const std::filesystem::path& filename){
     wxZipInputStream zip(file);
     Entries result;
     std::uint64_t total=0,json_total=0,tile_total=0;
-    std::array<unsigned char,65536> buffer{};
+    std::array<unsigned char,65536> buffer{},source_buffer{};
+    std::size_t verified_originals=0;
     while(auto item=std::unique_ptr<wxZipEntry>(zip.GetNextEntry())){
         if(result.size()>=300000)throw std::runtime_error("PAK entry count limit");
         // On UTF-8 wxWidgets builds the conversion buffer may borrow the
@@ -35,12 +41,30 @@ inline sc::validation::Entries read_pak(const std::filesystem::path& filename){
         const bool png=name.ends_with(".png")&&name.starts_with("graphics/");
         const bool tiles=name.starts_with("records/")&&(name.ends_with("/ground.u16le")||name.ends_with("/objects.u8x2"));
         const std::uint64_t cap=tiles?2000000ull:json||png?64ull*1024*1024:8ull*1024*1024*1024;
+        std::ifstream original;
+        const sc::Asset* source=nullptr;
+        if(sources){
+            auto found=sources->find(name);
+            if(found!=sources->end()){
+                source=found->second;
+                if(!source)throw std::runtime_error("Missing source binding: "+name);
+                original.open(source->backing,std::ios::binary);
+                if(!original||!original.seekg(static_cast<std::streamoff>(source->offset)))
+                    throw std::runtime_error("Cannot reopen original source: "+name);
+            }
+        }
         sc::Bytes image;
         Entry e;std::uint32_t crc=0xffffffffu;
         for(;;){
             zip.Read(buffer.data(),buffer.size());auto n=zip.LastRead();
             if(n>cap-e.size||n>32ull*1024*1024*1024-total)
                 throw std::runtime_error("PAK read limit exceeded: "+name);
+            if(source&&n){
+                if(e.size>source->size||n>source->size-e.size||
+                   !original.read(reinterpret_cast<char*>(source_buffer.data()),static_cast<std::streamsize>(n))||
+                   !std::equal(buffer.begin(),buffer.begin()+n,source_buffer.begin()))
+                    throw std::runtime_error("Original bytes differ from input: "+name);
+            }
             crc=crc32_update(crc,buffer.data(),n);
             e.size+=n;total+=n;
             if(json){
@@ -58,6 +82,10 @@ inline sc::validation::Entries read_pak(const std::filesystem::path& filename){
         if(item->GetSize()<0||static_cast<std::uint64_t>(item->GetSize())!=e.size||
             item->GetCrc()!=(crc^0xffffffffu))
             throw std::runtime_error("ZIP length or CRC mismatch: "+name);
+        if(source){
+            if(e.size!=source->size)throw std::runtime_error("Original source size mismatch: "+name);
+            ++verified_originals;
+        }
         if(png){
             // Validate dimensions before wxImage allocates decoded pixels.
             const unsigned char signature[]={137,80,78,71,13,10,26,10};
@@ -80,6 +108,7 @@ inline sc::validation::Entries read_pak(const std::filesystem::path& filename){
         result.emplace(std::move(name),std::move(e));
     }
     if(zip.GetLastError()!=wxSTREAM_EOF)throw std::runtime_error("Invalid ZIP end");
+    if(sources&&verified_originals!=sources->size())throw std::runtime_error("Missing original source entry in PAK");
     return result;
 }
 
