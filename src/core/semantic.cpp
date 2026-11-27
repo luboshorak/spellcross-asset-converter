@@ -77,6 +77,9 @@ bool legacy_support_asset(const Asset& a){
     if(a.member&&block=="MOVIE.FS"&&n=="TEMP.DPK"&&a.format=="DPK"&&a.size==525)return true;
     if(block=="INSTALL.FS"&&n.size()==7&&n.starts_with("MSG")&&
        std::all_of(n.begin()+3,n.end(),[](char c){return c>='0'&&c<='9';}))return true;
+    if(!a.member&&full=="AUTORUN.INF"&&a.format=="INF"&&a.size==48)return true;
+    if(!a.member&&full=="INSTAL~1.EXE"&&a.format=="EXE"&&a.size==400384)return true;
+    if(a.member&&full.ends_with("INSTALL.DTA::SETSOUND.BAT")&&a.format=="BAT"&&a.size==42)return true;
     // Explicit DOS support paths and filenames, not a blanket rule for
     // unknown extensions or all contents of INSTALL.DTA.
     if(full.find("::DRIVERS/")!=std::string::npos||full.starts_with("DRIVERS/")){
