@@ -195,3 +195,7 @@ Fix decoding of editor p16 names whose length includes the terminating NUL. Keep
 ### 0.9.14.2 – Czech retail audit fixes
 
 Correct UTF-8 script labels; review four previously unreviewed tactical/upgrade directives; resolve local EventData references; distinguish missing outcome messages and single-frame static attacks; diagnose missing resources against exported inventory. Source bytes and game data remain unchanged. Real Czech re-export and full English export are the next acceptance checks.
+
+### 0.9.14.3 – English retail assets
+
+Indexed PCX, radar graphics, installer bar and mask, quick-help rectangles, empty debrief text, cheat text and archival installer roles. Tutorial/slideshow reference review and explicit EN CD music absence; original data retained without synthetic cross-edition assets. CZ and EN full re-export required.
