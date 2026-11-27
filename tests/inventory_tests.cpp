@@ -788,6 +788,35 @@ int main(){
         }
         // Installer resources must not inherit the unrelated tactical bank.
         sc::Asset installer_bar;installer_bar.member=true;installer_bar.name="DATA/INSTALL.FS::BAR.LZ";installer_bar.format="LZ";
+        auto en_bar=sc::decode_image(installer_bar,B(342*32,7));
+        require(en_bar&&en_bar->width==342&&en_bar->height==32);
+        sc::Asset radar;radar.name="COMMON.FS::RAD49.LZ";radar.member=true;radar.format="LZ";
+        auto radar_image=sc::decode_image(radar,B(78*76,0));
+        require(radar_image&&radar_image->width==78&&radar_image->height==76&&radar_image->opaque[0]==255);
+        require(!sc::decode_image(radar,B(78*76+1,0)));
+        sc::Asset mask=installer_bar;mask.name="DATA/INSTALL.FS::MASK.LZ";
+        auto mask_image=sc::decode_image(mask,B(604*272,255));
+        require(mask_image&&mask_image->indices.size()==604*272&&mask_image->indices[0]==255);
+        require(!sc::decode_image(mask,B(604*272,1)));
+        sc::Asset empty_text;empty_text.name="TEXTS.FS::T07_01B.BAD";empty_text.member=true;empty_text.format="BAD";
+        require(sc::is_text_asset(empty_text,B{}));
+        sc::Asset cheat;cheat.name="COMMON.FS::CHEATS.LZ";cheat.member=true;cheat.format="LZ";
+        require(sc::is_text_asset(cheat,B{'a','\r','\n','b'}));
+        // PCX with two pixels, padded row and an escaped high index.
+        sc::Asset pcx;pcx.name="TEST.PCX";pcx.format="PCX";
+        B pcx_data(128);pcx_data[0]=10;pcx_data[1]=5;pcx_data[2]=1;pcx_data[3]=8;
+        pcx_data[8]=1;pcx_data[65]=1;pcx_data[66]=4;
+        pcx_data.insert(pcx_data.end(),{0,0xc1,255,0xc2,0,12});pcx_data.resize(pcx_data.size()+768);
+        auto pcx_image=sc::decode_image(pcx,pcx_data);
+        require(pcx_image&&pcx_image->width==2&&pcx_image->height==1&&pcx_image->indices==B({0,255})&&pcx_image->opaque==B({255,255}));
+        pcx_data[131]=0xc3;bool bad_pcx=false;
+        try{sc::decode_image(pcx,pcx_data);}catch(const std::exception&){bad_pcx=true;}require(bad_pcx);
+        sc::Asset qh;qh.format="QH";qh.name="COMMON.FS::BATTLES.QH";qh.member=true;
+        const std::string qh_text="; comment\r\n1,403,61,50\r\nPicture of unit\r\n2,453,57,8\r\nExperience points left\r\nto next level";
+        auto help=sc::quick_help(qh,B(qh_text.begin(),qh_text.end()));
+        require(help&&help->find("\"region_count\":2")!=std::string::npos&&help->find("Experience points left")!=std::string::npos&&help->find("to next level")!=std::string::npos);
+        const std::string bad_qh="639,0,2,1\nOutside";
+        bool bad_region=false;try{sc::quick_help(qh,B(bad_qh.begin(),bad_qh.end()));}catch(const std::exception&){bad_region=true;}require(bad_region);
         auto missing_installer_palette=sc::asset_palette({},installer_bar,tactical);
         require(!missing_installer_palette.known[7]);
         sc::Asset logo;logo.member=true;logo.name="COMMON.FS::JRC_LOGO.LZ";logo.format="LZ";
