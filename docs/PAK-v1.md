@@ -1,4 +1,4 @@
-# Spellcross modern data pack v1 (draft runtime contract)
+# Spellcross modern data pack v1 (standalone export contract)
 
 A .pak is a conventional ZIP/ZIP64 archive. The root manifest.json in the output
 directory identifies packages and schema version. Packages are grouped by logical
@@ -33,10 +33,11 @@ The manifest distinguishes converted, decoded, raw, failed and container.
 Container and raw records do not imply modern runtime support. Converted graphics
 mean pixel/geometry conversion only, not complete gameplay semantics.
 
-This is a draft runtime contract: no loader in SR yet. Binary definitions, map
-layers, full animation semantics, fonts, sound/video conversion, and unparsed
-nested containers remain open. No original commercial resources are distributed
-with the converter.
+This is a standalone export contract, not certification of game behavior.
+Unit definitions, map layers, ordered scripts, fonts, audio and video have
+modern payloads as described below. Animation timing, engine interpretation,
+and visual parity remain open. No native PAK loader in SR is provided by this
+project. No original commercial resources are distributed with the converter.
 
 ### Semantic extensions (0.7.0)
 
@@ -117,3 +118,11 @@ GUI export parses recognized ordered scripts using the selected retail text enco
 ### 0.9.14.3 English retail extensions
 
 Indexed one-plane 8-bit RLE PCX uses original indices, fully opaque mask and its embedded 256-color palette. RAD00–49 use 78×76 indexed arrays, EN INSTALL.FS BAR uses 342×32 (CZ remains 320×38); MASK is a 604×272 binary-valued indexed plane (0/255), not a newly invented alpha mask. Geometry reconstructed from actual decoded pixel arrays; installer palette remains uncertain if no unambiguous original palette is available. QH records use `spellcross-quick-help` version 1 with screen [640,480], ordered regions {rect:[x,y,w,h],text} and region_count; bounds verified, original text bytes preserved. CHEATS.LZ text is retained in source order without reversing its encoded strings. Zero-length BAD in TEXTS.FS is an intentionally empty converted text resource. Explicit installer archival records remain source-only. EN full datasets with no MUSIC.FS inventory get `edition-absent` for missing music track references; a present archive or partial selection retains normal missing rules. CZ is not required to contain QH. Tutorial and slideshow directives retain original arguments; local event IDs and slideshow image links checked, execution/timing not certified. Re-export old sidecars for changed audit rules.
+
+### 0.9.15 acceptance contract and independent reader
+
+The root and every package manifest now carry `converter_version`, taken from the CMake project version. This is independent of the schema version (still 1). A stamped dataset rejects packages with a different or absent converter version. Unstamped v1 datasets remain readable under the existing rules. Re-export rather than mixing package files from different runs.
+
+During a new export, the converter reopens the input and compares every physically stored original entry byte-for-byte during streaming ZIP read-back; each logical record's range must point to the exact original backing file and offset of the selected scan record. Fallback entries must equal the whole corresponding source asset. A source change, missing entry, mismapped range or byte difference fails the export. This checks selected asset bytes, not unused sectors of the entire CD, and does not prove that every derived pixel or rule has identical game behavior. Standalone validation without the original source only checks the archive and metadata; the audit explicitly records that limitation.
+
+A native consumer starts at manifest.json, resolves exact logical IDs via resources.json, opens the declared package, and reads only modern payloads. Ambiguous leaf names are not silently resolved. Atlas indices and opacity must be decoded as data planes; use the palette table rather than treating indices as RGB. Preserve original bytes for archival recovery, but never rely on them as a hidden prerequisite for a modern loader. See examples/pak_reader.py for a read-only stdlib example and tests/test_pak_reader.py for its synthetic native-only fixture. This example does not render the game or replace full validation. Runtime readiness remains false until a real engine has demonstrated gameplay parity.

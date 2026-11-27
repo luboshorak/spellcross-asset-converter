@@ -842,9 +842,14 @@ class Frame final : public wxFrame {
         if(pcm)meta<<",\"sample_rate\":"<<pcm->rate<<",\"channels\":"<<pcm->channels<<",\"sample_frames\":"<<pcm->samples.size()/pcm->channels;
         meta<<"}\n";return meta.str();
     }
+    struct ExportSources {
+        std::map<std::string,sc::pak_io::OriginalSources> physical;
+        std::map<std::string,const sc::Asset*> logical;
+    };
     static sc::validation::AuditReport check_dataset(const std::filesystem::path& dir,
                                      const std::function<bool(const std::string&)>& progress,
-                                     const std::vector<sc::validation::SourceRecord>* expected_source=nullptr){
+                                     const std::vector<sc::validation::SourceRecord>* expected_source=nullptr,
+                                     const ExportSources* source_bindings=nullptr){
         using namespace sc::validation;
         if(!std::filesystem::is_regular_file(dir/"manifest.json"))
             throw std::runtime_error("Dataset manifest.json missing. Select the manifest inside the completed Spellcross-PAK export directory.");
@@ -854,14 +859,34 @@ class Frame final : public wxFrame {
         std::map<std::string,PackageSummary> summaries;
         for(auto& package:packages){
             if(!progress(package.file))throw std::runtime_error("Validation cancelled");
-            auto contents=sc::pak_io::read_pak(dir/package.file);
+            const sc::pak_io::OriginalSources* originals=nullptr;
+            if(source_bindings)originals=&source_bindings->physical.at(package.file);
+            auto contents=sc::pak_io::read_pak(dir/package.file,originals);
             try{
                 auto summary=validate_package(contents,package.category);
+                if(originals){
+                    std::set<std::string> referenced;
+                    for(const auto& row:summary.audit_records){
+                        const auto* asset=source_bindings->logical.at(row.id);
+                        auto check=[&](const std::string& loc,std::uint64_t offset,bool whole){
+                            const auto* parent=originals->at(loc);
+                            if(parent->backing!=asset->backing||asset->offset<parent->offset||
+                               asset->offset-parent->offset!=offset||row.source_bytes!=asset->size||
+                               (whole&&(offset!=0||parent->size!=asset->size)))
+                                throw std::runtime_error("Original source range mismatch: "+row.id);
+                            referenced.insert(loc);
+                        };
+                        check(row.original_entry,row.original_offset,false);
+                        if(!row.fallback_entry.empty())check(row.fallback_entry,0,true);
+                    }
+                    if(referenced.size()!=originals->size())throw std::runtime_error("Unreferenced original source entry");
+                }
                 summary.archive_bytes=std::filesystem::file_size(dir/package.file);
                 summaries.emplace(package.file,std::move(summary));
             }catch(const std::exception& e){throw std::runtime_error(package.file+": "+e.what());}
         }
         auto report=audit_report(root,summaries,expected_source);
+        report.summary.insert(report.summary.find("\n\n",report.summary.find("Source inventory match:")),source_bindings?"\nOriginal source bytes: exact streamed comparison passed (all original entries and logical ranges)":"\nOriginal source bytes: not independently checked (no input bound)");
         if(has_resource_catalog(root)){
             const auto catalog_path=dir/"resources.json";
             if(expected_source){
@@ -945,7 +970,9 @@ class Frame final : public wxFrame {
             std::uint64_t png_total=0,pixel_total=0;
             std::map<std::string,std::map<std::string,std::size_t>> coverage;
             std::vector<std::pair<std::size_t,std::string>> unresolved;
+            ExportSources source_bindings;
             std::ostringstream root;root<<"{\n\"schema\":\"spellcross-dataset\",\"version\":1,\"partial\":"<<(partial?"true":"false")
+                <<",\"converter_version\":"<<json(SC_CONVERTER_VERSION)
                 <<",\"runtime_ready\":false,\"resource_catalog\":\"resources.json\",\"game_metadata\":\"game-metadata.json\",\"source_kind\":"<<json(inv.source_kind)
                 <<",\"edition_language\":"<<json(edition)
                 <<",\"encoding_setting\":"<<json(std::string(encoding_choice->GetStringSelection().utf8_str().data()))
@@ -956,6 +983,7 @@ class Frame final : public wxFrame {
                 const auto package_start=Clock::now();
                 if(!first_pack)root<<",\n";first_pack=false;
                 const auto filename=category+".pak";
+                auto& original_sources=source_bindings.physical[filename];
                 wxFFileOutputStream file(w(sc::utf8(dest/filename)));
                 if(!file.IsOk())throw std::runtime_error("Cannot open PAK output");
                 wxZipOutputStream zip(file);zip.SetFormat(wxZIP_FORMAT_ZIP64);
@@ -971,9 +999,10 @@ class Frame final : public wxFrame {
                         source_containers[a.name].push_back(i);
                         auto loc="original/containers/"+std::to_string(i)+".bin";
                         zip_original(zip,w(loc),a);container_paths[i]=loc;
+                        original_sources.emplace(loc,&a);
                     }
                 }
-                std::ostringstream manifest;manifest<<"{\"schema\":\"spellcross-pak\",\"version\":1,\"category\":"<<json(category)
+                std::ostringstream manifest;manifest<<"{\"schema\":\"spellcross-pak\",\"version\":1,\"converter_version\":"<<json(SC_CONVERTER_VERSION)<<",\"category\":"<<json(category)
                     <<",\"partial\":"<<(partial?"true":"false")<<",\"records\":[\n";
                 bool first_record=true;
                 sc::pack::PaletteTable palettes;
@@ -1202,6 +1231,7 @@ class Frame final : public wxFrame {
                         // Converted members reference the one preserved container.
                         if(status!="container"&&(original_path.empty()||status=="raw"||status=="failed"||status=="decoded")){
                             fallback=base+"original.bin";zip_original(zip,w(fallback),a);
+                            original_sources.emplace(fallback,&a);
                             if(original_path.empty()){original_path=fallback;relative=0;}
                         }
                         if(!legacy_only&&!synthetic&&(status=="raw"||status=="failed"||status=="decoded"))
@@ -1276,9 +1306,11 @@ class Frame final : public wxFrame {
             for(const auto& [category,items]:packages)for(auto i:items){
                 const auto& a=inv.assets[i];
                 expected_source.push_back({ids[i],a.name,a.format,category,a.size});
+                if(!source_bindings.logical.emplace(sc::validation::source_name_utf8(ids[i]),&a).second)
+                    throw std::runtime_error("Duplicate source binding");
             }
             const auto verification_start=Clock::now();
-            auto verified=check_dataset(dest,[&](const std::string& p){return progress.Pulse("Verifying "+w(p));},&expected_source);
+            auto verified=check_dataset(dest,[&](const std::string& p){return progress.Pulse("Verifying "+w(p));},&expected_source,&source_bindings);
             timings<<"Read-back validation: "<<seconds(Clock::now()-verification_start)<<" s\n"
                    <<"Total: "<<seconds(Clock::now()-start)<<" s\n";
             write_manifest_file(dest/"pak-performance.txt",timings.str());
@@ -1680,7 +1712,7 @@ public:
         Bind(wxEVT_MENU,[this](wxCommandEvent&){analyze();},scan_id);
         Bind(wxEVT_MENU,[this](wxCommandEvent&){export_manifest();},save_manifest);
         Bind(wxEVT_MENU,[this](wxCommandEvent&){Close();},wxID_EXIT);
-        Bind(wxEVT_MENU,[this](wxCommandEvent&){wxMessageBox("Spellcross Asset Converter 0.9.14.3\nPart of Spellcross Reloaded\nMIT license\nCopyright (c) 2026 Luboš Horák\nSpellcross Reloaded by Luboš Horák; foundations by Stanislav Mašláň.\nhttps://github.com/luboshorak/spellcross-reloaded\nCAN decoder: CPAL-1.0; libsmacker: LGPL-2.1-or-later.","About",wxOK|wxICON_INFORMATION,this);},wxID_ABOUT);
+        Bind(wxEVT_MENU,[this](wxCommandEvent&){wxMessageBox("Spellcross Asset Converter " SC_CONVERTER_VERSION "\nPart of Spellcross Reloaded\nMIT license\nCopyright (c) 2026 Luboš Horák\nSpellcross Reloaded by Luboš Horák; foundations by Stanislav Mašláň.\nhttps://github.com/luboshorak/spellcross-reloaded\nCAN decoder: CPAL-1.0; libsmacker: LGPL-2.1-or-later.","About",wxOK|wxICON_INFORMATION,this);},wxID_ABOUT);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){choose(true);},open_dir);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){choose(false);},open_file);
         Bind(wxEVT_BUTTON,[this](wxCommandEvent&){analyze();},scan_id);

@@ -29,6 +29,26 @@ int main(){
         require(entries.size()==4&&entries.at("original/containers/4190.bin").size==6);
         require(entries.at("records/1/text.txt").size==6&&entries.at("records/2/empty.bin").size==0);
         require(sc::validation::validate_package(entries,"common").records==1);
+        const auto input=temp/"input.bin";
+        auto put_source=[&](const std::string& bytes){std::ofstream f(input,std::ios::binary);f.write(bytes.data(),bytes.size());require(bool(f));};
+        put_source("xxsourceyy");
+        sc::Asset source_asset;source_asset.backing=input;source_asset.offset=2;source_asset.size=6;
+        sc::pak_io::OriginalSources sources{{"original/containers/4190.bin",&source_asset}};
+        require(sc::pak_io::read_pak(archive,&sources).at("original/containers/4190.bin").size==6);
+        put_source("xxsourcEyy"); // valid ZIP CRC, same source length, one byte differs
+        bool source_mismatch=false;
+        try{sc::pak_io::read_pak(archive,&sources);}catch(const std::exception&){source_mismatch=true;}
+        require(source_mismatch);
+        put_source("xxsourceyy");
+        sources.emplace("missing.bin",&source_asset);
+        bool missing_source=false;
+        try{sc::pak_io::read_pak(archive,&sources);}catch(const std::exception&){missing_source=true;}
+        require(missing_source);
+        sources.erase("missing.bin");
+        sc::Asset empty_asset=source_asset;empty_asset.offset=10;empty_asset.size=0;
+        sources.emplace("records/2/empty.bin",&empty_asset);
+        require(sc::pak_io::read_pak(archive,&sources).at("records/2/empty.bin").size==0);
+
         const auto duplicate=temp/"duplicate.pak";
         {
             wxFFileOutputStream file(wxString(duplicate.wstring()));

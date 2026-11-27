@@ -477,6 +477,16 @@ int main(){
         auto summary=validate_package(entries,"common");require(summary.records==1&&summary.counts.at("converted")==1);
         auto dataset=R"({"schema":"spellcross-dataset","version":1,"partial":false,"runtime_ready":false,"packages":[{"file":"common.pak","category":"common","records":1,"converted":1,"decoded":0,"raw":0,"failed":0,"containers":0}],"coverage_by_format":{"common/TXT":{"converted":1}},"atlas_metrics":{"frames":0,"pages":0,"source_pixels":0,"png_bytes":0}})";
         validate_dataset(dataset,{{"common.pak",summary}});
+        {
+            auto stamped=std::string(dataset);
+            stamped.insert(1,"\"converter_version\":\"0.9.15\",");
+            auto stamped_summary=summary;stamped_summary.converter_version="0.9.15";
+            validate_dataset(stamped,{{"common.pak",stamped_summary}});
+            bool mixed_version=false;
+            try{validate_dataset(stamped,{{"common.pak",summary}});}catch(const std::exception&){mixed_version=true;}
+            require(mixed_version);
+            require(audit_report(stamped,{{"common.pak",stamped_summary}}).summary.find("Converter version: 0.9.15")!=std::string::npos);
+        }
         require(summary.audit_records.size()==1&&summary.audit_records[0].kind=="utf8-text"&&
                 summary.audit_records[0].assessment=="modern-payload");
         require(summary.original_bytes==4&&summary.derived_bytes==2&&summary.zip_entries==3);
