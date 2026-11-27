@@ -397,7 +397,7 @@ static void script_metadata(PackageSummary& out,const AuditRecord& row,const J& 
 
 PackageSummary validate_package(const Entries& entries,std::string_view expected){
     auto j=parse(entry(entries,"manifest.json").json);schema(j,"spellcross-pak");
-    PackageSummary out;out.category=j.at("category").str();if(out.category!=expected)fail("Package category mismatch");
+    PackageSummary out;if(auto v=j.get("converter_version"))out.converter_version=v->str();out.category=j.at("category").str();if(out.category!=expected)fail("Package category mismatch");
     j.at("partial").boolean();
     std::map<std::string,std::string> payloads;
     std::set<std::string> ids,graphics,used_pages,originals,derived;
@@ -699,11 +699,13 @@ PackageSummary validate_package(const Entries& entries,std::string_view expected
 }
 void validate_dataset(std::string_view text,const std::map<std::string,PackageSummary>& summaries){
     auto j=parse(text);schema(j,"spellcross-dataset");auto packages=dataset_packages(text);
+    const auto version=j.get("converter_version");
+    if(version&&version->str().empty())fail("Empty converter version");
     if(packages.size()!=summaries.size())fail("Dataset package count mismatch");
     PackageSummary total;std::map<std::string,std::uint64_t> formats;
     for(auto& p:j.at("packages").arr()){
         auto file=p.at("file").str();auto it=summaries.find(file);if(it==summaries.end())fail("Missing package: "+file);
-        auto& s=it->second;if(s.category!=p.at("category").str()||s.records!=p.at("records").num())fail("Package record count mismatch");
+        auto& s=it->second;if(version&&s.converter_version!=version->str())fail("Package converter version mismatch: "+file);if(s.category!=p.at("category").str()||s.records!=p.at("records").num())fail("Package record count mismatch");
         for(auto& status:statuses)if(p.at(status=="container"?"containers":status).num()!=count(s.counts,status))fail("Package coverage mismatch: "+file);
         for(auto& [k,n]:s.formats)formats[s.category+"/"+k]+=n;
         total.frames+=s.frames;total.pages+=s.pages;total.pixels+=s.pixels;total.png_bytes+=s.png_bytes;
@@ -729,7 +731,7 @@ static std::string audit_cell(std::string_view value){
     return out;
 }
 // pack::json encodes every original non-ASCII byte as U+00xx.
-static std::string source_name_utf8(std::string_view bytes){
+std::string source_name_utf8(std::string_view bytes){
     std::string result;
     for(unsigned char c:bytes){
         if(c<128)result+=char(c);
@@ -1145,6 +1147,8 @@ AuditReport audit_report(std::string_view root,const std::map<std::string,Packag
         <<"Structural validation: passed\n"
         <<"Dataset: "<<(j.at("partial").boolean()?"PARTIAL":"full selection")<<"\n"
         <<"Manifest runtime_ready: "<<(j.at("runtime_ready").boolean()?"true":"false")<<" (declared, not certified)\n";
+    if(auto version=j.get("converter_version"))report<<"Converter version: "<<version->str()<<"\n";
+    else report<<"Converter version: not recorded\n";
     if(auto language=j.get("edition_language"))report<<"Edition: "<<language->str()<<"\n";
     if(auto warnings=j.get("scan_warnings"))report<<"Source scan warnings: "<<warnings->arr().size()<<"\n";
     report<<"Source inventory match: "<<(expected_source?"checked against selected scan":"not independently checked")<<"\n\n";
