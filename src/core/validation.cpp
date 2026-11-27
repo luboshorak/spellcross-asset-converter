@@ -295,7 +295,50 @@ static void script_metadata(PackageSummary& out,const AuditRecord& row,const J& 
             bool reviewed=true;
             if(k=="MISSIONMAP")at(0,"map","COMMON.FS");
             else if(k=="ADDUNIT"||k=="ADDSPECIALUNIT")at(1,"definition","unit",true);
-            else if(k=="ADDUNITTOPLAYER")at(0,"definition","unit",true);
+            else if(domain=="tactical"&&k=="ADDMISSIONOBJECTIVE"){
+                // Objective arguments are mission instance IDs or linear map
+                // positions, NOT unit type IDs. Do not invent a type lookup.
+                const auto type=args.empty()?std::string{}:game_upper(args[0]);
+                const bool all_units=type=="DESTROYALLUNITS";
+                const bool unit=type=="DESTROYUNIT"||type=="SAVEUNIT"||type=="TRANSPORTUNIT";
+                const bool tile=type=="DESTROYOBJECT"||type=="SEEPLACE";
+                auto valid_unsigned=[](const std::string& value){
+                    std::uint64_t n{};auto p=std::from_chars(value.data(),value.data()+value.size(),n);
+                    return p.ec==std::errc{}&&p.ptr==value.data()+value.size();
+                };
+                if((all_units&&args.size()==2&&!args[1].empty())||
+                   ((unit||tile)&&args.size()==3&&valid_unsigned(args[1])&&!args[2].empty()))
+                    ++out.metadata_coverage["objective:"+type];
+                else reviewed=false;
+            }else if(domain=="tactical"&&k=="ADDSPECIALEVENT"){
+                const auto type=args.empty()?std::string{}:game_upper(args[0]);
+                const bool start=type=="MISSIONSTART",tile=type=="SEEPLACE",unit=type=="SEEUNIT";
+                auto number=[](std::string_view value)->std::optional<std::uint64_t>{
+                    std::uint64_t n{};auto p=std::from_chars(value.data(),value.data()+value.size(),n);
+                    if(p.ec!=std::errc{}||p.ptr!=value.data()+value.size())return std::nullopt;
+                    return n;
+                };
+                if((start&&args.size()==3)||((tile||unit)&&args.size()==4)){
+                    auto event_pos=start?1u:2u;
+                    auto pct=std::string_view(args.back());
+                    if(pct.ends_with('%'))pct.remove_suffix(1);
+                    const auto probability=number(pct);
+                    if(number(args[event_pos])&&probability&&*probability<=100&&
+                       (start||number(args[1]))){
+                        at(event_pos,"definition","tactical-event:"+row.id,true);
+                        ++out.metadata_coverage["trigger:"+type];
+                    }else reviewed=false;
+                }else reviewed=false;
+            }else if(domain=="tactical"&&k=="NIGHTMISSION"){
+                if(args.empty())++out.metadata_coverage["night-mission"];else reviewed=false;
+            }else if(domain=="upgrade"&&k=="RANGE"){
+                if(args.size()!=1)reviewed=false;
+                else{
+                    std::int64_t n{};auto p=std::from_chars(args[0].data(),args[0].data()+args[0].size(),n);
+                    if(p.ec==std::errc{}&&p.ptr==args[0].data()+args[0].size())++out.metadata_coverage["upgrade-range"];
+                    else reviewed=false;
+                }
+            }else if(k=="ADDUNITTOPLAYER")at(0,"definition","unit",true);
             else if(k=="ATTACKUNITS"||k=="ATTACKSPECIALUNITS"||k=="ARMY"||k=="SUITABLETYPES")all(0,"unit");
             else if(k=="UNITSTOGROUP")all(1,"unit");
             else if(k=="DEFINECOMMANDER"&&domain=="commander"&&!args.empty())definitions["commander"].push_back(game_id(args[0]));
@@ -804,6 +847,7 @@ static void json_target(std::ostream& o,const Target& t){
 static GameAudit game_audit(std::string_view root,const std::map<std::string,PackageSummary>& packages){
     const bool partial=parse(root).at("partial").boolean();
     TargetIndex index;
+    TargetIndex inventory_index;
     std::map<std::string,std::uint64_t> coverage,unknown,results;
     std::vector<std::pair<std::string,const AtlasGroup*>> groups;
     std::vector<const FsuContextRecord*> contexts;
@@ -820,6 +864,11 @@ static GameAudit game_audit(std::string_view root,const std::map<std::string,Pac
                 put(kind,scope,leaf,t);auto base=game_stem(leaf);
                 if(stem&&base!=leaf)put(kind,scope,base,t);
             };
+            // Keep a separate index of every original record so a missing
+            // typed link can be distinguished from an unindexed conversion.
+            inventory_index[{"source",scope,leaf}].push_back(t);
+            const auto base=game_stem(leaf);
+            if(base!=leaf)inventory_index[{"source",scope,base}].push_back(t);
             const bool image=!r.atlas_entry.empty()&&(r.kind=="indexed-atlas"||r.kind=="synthetic-placeholder");
             if(scope=="T11.FS"||scope=="PUST.FS"||scope=="DEVAST.FS"){
                 if(r.format=="DTA"&&(image||r.status=="raw"||r.status=="failed"))add("terrain-sprite");
@@ -902,14 +951,29 @@ static GameAudit game_audit(std::string_view root,const std::map<std::string,Pac
         json<<"]}";
     }
     json<<"],\"references\":[\n";first=true;
-    tsv<<"source\tfield\tkind\tscope\ttarget\tresult\tcandidate_count\tcandidate_locators\n";
+    tsv<<"source\tfield\tkind\tscope\ttarget\tresult\tcandidate_count\tcandidate_locators\tdiagnosis\n";
     auto emit=[&](const GameReference& ref,const std::string& status,const std::vector<Target>& candidates){
+        std::string diagnosis;
+        if(status=="missing"||status=="missing-end-text"){
+            if(empty_target(alias_key(ref.target)))diagnosis="required-value-empty";
+            else if(ref.kind=="definition")diagnosis="definition-not-found";
+            else if(ref.kind=="atlas-group")diagnosis="atlas-group-not-found";
+            else{
+                auto key=std::make_tuple(std::string("source"),ref.scope,alias_key(ref.target));
+                auto it=inventory_index.find(key);
+                // Movie files can also be loose files in EN distributions.
+                if(it==inventory_index.end()&&ref.kind=="movie")
+                    it=inventory_index.find({"source","",alias_key(ref.target)});
+                diagnosis=it==inventory_index.end()?"resource-not-in-exported-inventory":"resource-listed-but-not-indexed-for-kind";
+            }
+        }else if(status=="static-frame-reference")diagnosis="static-direction-set-single-frame; runtime-selection-unverified";
         ++results[status];
         if(!first)json<<",\n";first=false;
         json<<"{\"source\":"<<catalog_quote(ref.source)<<",\"field\":"<<catalog_quote(ref.field)
             <<",\"kind\":"<<catalog_quote(ref.kind)<<",\"scope\":"<<catalog_quote(ref.scope)
             <<",\"target\":"<<catalog_quote(ref.target)<<",\"result\":"<<catalog_quote(status);
         if(ref.frame_limit)json<<",\"frame_limit\":"<<ref.frame_limit;
+        if(!diagnosis.empty())json<<",\"diagnosis\":"<<catalog_quote(diagnosis);
         json<<",\"candidates\":[";
         std::string locators;
         for(std::size_t i=0;i<candidates.size();++i){
@@ -919,7 +983,7 @@ static GameAudit game_audit(std::string_view root,const std::map<std::string,Pac
         }
         json<<"]}";
         tsv<<audit_cell(ref.source)<<'\t'<<audit_cell(ref.field)<<'\t'<<audit_cell(ref.kind)<<'\t'
-           <<audit_cell(ref.scope)<<'\t'<<audit_cell(ref.target)<<'\t'<<status<<'\t'<<candidates.size()<<'\t'<<audit_cell(locators)<<'\n';
+           <<audit_cell(ref.scope)<<'\t'<<audit_cell(ref.target)<<'\t'<<status<<'\t'<<candidates.size()<<'\t'<<audit_cell(locators)<<'\t'<<audit_cell(diagnosis)<<'\n';
     };
     for(const auto& [file,p]:packages)for(const auto& ref:p.game_references){
         const auto key=alias_key(ref.target);
@@ -929,12 +993,29 @@ static GameAudit game_audit(std::string_view root,const std::map<std::string,Pac
         }
         const auto& candidates=find(ref.kind,ref.scope,ref.target);
         std::string status;
-        if(candidates.empty())status=missing;
+        if(candidates.empty()){
+            // Missing end-of-mission messages have a documented generic
+            // presentation fallback in the game. Keep them distinct from
+            // absent mandatory assets and do not synthesize source text.
+            const bool end_text=ref.kind=="text"&&ref.scope=="TEXTS.FS"&&
+                (ref.field.ends_with(" MISSIONENDOKTEXT[0]")||ref.field.ends_with(" MISSIONENDBADTEXT[0]"));
+            status=!partial&&end_text?"missing-end-text":missing;
+        }
         else if(candidates.size()>1)status="ambiguous";
         else if(candidates[0].placeholder)status="placeholder";
         else if(!candidates[0].usable)status="unsupported-target";
-        else if(ref.frame_limit&&candidates[0].atlas&&ref.frame_limit>candidates[0].atlas->sequence_frames)
-            status="frame-limit-review";
+        else if(ref.frame_limit&&candidates[0].atlas&&ref.frame_limit>candidates[0].atlas->sequence_frames){
+            const auto& g=*candidates[0].atlas;
+            // A one-frame attack can refer to an entirely static azimuth
+            // set. Expose that fact distinctly; do not pretend animation
+            // timing or the runtime fallback has been certified.
+            const bool attack=ref.field.ends_with(".light_animation")||ref.field.ends_with(".armor_animation")||ref.field.ends_with(".air_animation");
+            if(attack&&ref.frame_limit==1&&g.fsu_layout&&g.sequence_frames==0&&
+               g.animation_rows==0&&g.static_slopes>0&&g.static_azimuths>0&&
+               g.frames==g.static_slopes*g.static_azimuths)
+                status="static-frame-reference";
+            else status="frame-limit-review";
+        }
         else status="resolved";
         emit(ref,status,candidates);
     }
@@ -993,8 +1074,12 @@ static GameAudit game_audit(std::string_view root,const std::map<std::string,Pac
     report<<"\nGAME METADATA / REFERENCE AUDIT (known rules only)\n";
     for(const auto& [k,n]:coverage)report<<k<<": "<<n<<"\n";
     report<<"\nREFERENCE RESULTS\n";
-    for(auto k:{"resolved","optional-empty","placeholder","missing","not-in-selection","ambiguous","unsupported-target","frame-limit-review","context-shape-review"})
+    for(auto k:{"resolved","optional-empty","placeholder","missing","not-in-selection","ambiguous","unsupported-target","frame-limit-review","context-shape-review","static-frame-reference","missing-end-text"})
         report<<k<<": "<<count(results,k)<<"\n";
+    report<<"\nMissing-end-text denotes absent referenced debrief messages with a documented game-side fallback.\n"
+          <<"Missing diagnoses compare with the exported inventory only, not independent source-byte verification.\n"
+          <<"Static-frame-reference describes a single-frame attack using a static azimuth set; runtime selection is not certified.\n"
+          <<"Tactical objective and trigger syntax is reviewed; runtime unit-instance targets and map-position semantics are not certified.\n";
     report<<"\nUNREVIEWED SCRIPT COMMANDS (not automatically treated as valid)\n";
     for(const auto& [k,n]:unknown)report<<k<<": "<<n<<"\n";
     report<<"See game-metadata.json and game-references.tsv for exact source fields and candidate locators.\n"

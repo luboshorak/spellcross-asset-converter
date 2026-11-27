@@ -46,9 +46,21 @@ std::optional<Call> call(std::string_view line,bool bare){
     }
     return c;
 }
-void arguments(std::ostream& o,const Call& c){
+// For decoded script text, keep multibyte UTF-8 intact. The original
+// byte stream remains in the PAK original range.
+std::string script_quote(std::string_view s,bool utf8){
+    if(!utf8)return json(s);
+    std::string out="\"";constexpr char digits[]="0123456789abcdef";
+    for(unsigned char c:s){
+        if(c=='"'||c=='\\'){out+='\\';out+=char(c);}
+        else if(c<32){out+="\\u00";out+=digits[c>>4];out+=digits[c&15];}
+        else out+=char(c);
+    }
+    return out+"\"";
+}
+void arguments(std::ostream& o,const Call& c,bool utf8){
     o<<"\"name\":"<<json(c.name)<<",\"keyword\":"<<json(lower(c.name))<<",\"args\":[";
-    for(std::size_t i=0;i<c.args.size();++i){if(i)o<<',';o<<json(c.args[i]);}o<<']';
+    for(std::size_t i=0;i<c.args.size();++i){if(i)o<<',';o<<script_quote(c.args[i],utf8);}o<<']';
 }
 struct Reader {
     Span d;std::size_t p{};
@@ -75,13 +87,13 @@ void hex(std::ostream& o,Span d){
     constexpr char digits[]="0123456789abcdef";o<<'"';for(auto b:d)o<<digits[b>>4]<<digits[b&15];o<<'"';
 }
 }
-std::optional<std::string> script_definition(const Asset& a,Span d){
+std::optional<std::string> script_definition(const Asset& a,Span d,bool utf8){
     if(a.format!="DEF"&&a.format!="TUT")return std::nullopt;
     if(d.empty()||d.size()>16u*1024u*1024u)return std::nullopt;
     for(auto b:d)if(b<32&&b!=9&&b!=10&&b!=13&&b!=26)return std::nullopt;
     std::string src(d.begin(),d.end());
     std::istringstream input(src);std::ostringstream o;
-    o<<"{\"schema\":\"spellcross-script\",\"version\":1,\"source_encoding\":\"byte-preserving JSON escapes\",\"records\":[\n";
+    o<<"{\"schema\":\"spellcross-script\",\"version\":1,\"source_encoding\":"<<json(utf8?"UTF-8":"byte-preserving JSON escapes")<<",\"records\":[\n";
     std::string line;std::size_t ln=0,blocks=0,commands=0,unknown=0,depth=0;bool first=true;
     // Flat ordered syntax records keep repeating calls and block boundaries
     // intact, including unknown commands. Do not infer defaults or execute.
@@ -100,16 +112,16 @@ std::optional<std::string> script_definition(const Asset& a,Span d){
         auto code=trim(line.substr(0,semi));
         if(code.empty()){if(eof!=std::string::npos)break;continue;}
         if(!first)o<<",\n";first=false;
-        o<<"{\"line\":"<<ln<<",\"source\":"<<json(raw);
+        o<<"{\"line\":"<<ln<<",\"source\":"<<script_quote(raw,utf8);
         if(code=="}"){
             if(!depth)throw std::runtime_error("Unmatched script closing brace at line "+std::to_string(ln));
             --depth;o<<",\"kind\":\"end\",\"depth\":"<<depth;
         }else if(code.back()=='{'){
             auto c=call(trim(std::string_view(code).substr(0,code.size()-1)),true);
-            if(c){o<<",\"kind\":\"block\",\"depth\":"<<depth<<',';arguments(o,*c);++blocks;++depth;}
+            if(c){o<<",\"kind\":\"block\",\"depth\":"<<depth<<',';arguments(o,*c,utf8);++blocks;++depth;}
             else{o<<",\"kind\":\"unknown\",\"depth\":"<<depth;++unknown;}
         }else if(auto c=call(code,false)){
-            o<<",\"kind\":\"call\",\"depth\":"<<depth<<',';arguments(o,*c);++commands;
+            o<<",\"kind\":\"call\",\"depth\":"<<depth<<',';arguments(o,*c,utf8);++commands;
         }else{o<<",\"kind\":\"unknown\",\"depth\":"<<depth;++unknown;}
         o<<'}';
         if(eof!=std::string::npos)break;

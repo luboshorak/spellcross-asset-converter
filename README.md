@@ -191,3 +191,7 @@ The combined milestones are implemented as a reviewable first pass. Full retail 
 ## 0.9.14.1 — real FSA compatibility
 
 Fix decoding of editor p16 names whose length includes the terminating NUL. Keep malformed-name and duplicate checks; retain compatibility with nonterminated test fixtures. Report zero/nonzero fire origins and centers, editor provenance and unverified original coordinate parity. The supplied real FSA passed an isolated C++ parser test (137 groups, 11,040 origins, 766 centers), with independently checked coordinate values. Full converter CI remains pending. No bundled FSA or SR changes.
+
+### 0.9.14.2 – Czech retail audit fixes
+
+Correct UTF-8 script labels; review four previously unreviewed tactical/upgrade directives; resolve local EventData references; distinguish missing outcome messages and single-frame static attacks; diagnose missing resources against exported inventory. Source bytes and game data remain unchanged. Real Czech re-export and full English export are the next acceptance checks.
