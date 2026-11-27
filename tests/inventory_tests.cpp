@@ -457,6 +457,16 @@ int main(){
             const auto static_report=audit_report(map_root,linked);
             require(static_report.references_tsv.find("SMOB1\tstatic-frame-reference\t1")!=std::string::npos);
             require(static_report.references_tsv.find("SMOB1\tframe-limit-review\t1")!=std::string::npos);
+            auto en_root=std::string(map_root);en_root.insert(1,"\"edition_language\":\"en\",");
+            linked["common.pak"].game_references.push_back({"map#1","music example","music","ABC","MUSIC.FS"});
+            require(audit_report(en_root,linked).references_tsv.find("ABC\tedition-absent\t0")!=std::string::npos);
+            require(audit_report(map_root,linked).references_tsv.find("ABC\tmissing\t0")!=std::string::npos);
+            linked["terrain.pak"].audit_records[0].name="MUSIC.FS";
+            require(audit_report(en_root,linked).references_tsv.find("ABC\tmissing\t0")!=std::string::npos);
+            // Tutorial mission DEFs use the tactical format, unlike TUTORIAL.DEF.
+            mission_entries["manifest.json"].json.replace(mission_entries["manifest.json"].json.find("M01_01A.DEF"),11,"TUT01.DEF");
+            auto tutorial_mission=validate_package(mission_entries,"common");
+            require(tutorial_mission.unreviewed_commands.empty()&&tutorial_mission.metadata_coverage.at("trigger:SEEPLACE")==1);
         }
         require(safe_entry("graphics/1/page.png")&&!safe_entry("../bad")&&!safe_entry("C:/bad"));
         const unsigned char crc_test[]="123456789";require((crc32_update(0xffffffffu,crc_test,9)^0xffffffffu)==0xcbf43926u);
