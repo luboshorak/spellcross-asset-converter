@@ -199,3 +199,15 @@ Correct UTF-8 script labels; review four previously unreviewed tactical/upgrade 
 ### 0.9.14.3 – English retail assets
 
 Indexed PCX, radar graphics, installer bar and mask, quick-help rectangles, empty debrief text, cheat text and archival installer roles. Tutorial/slideshow reference review and explicit EN CD music absence; original data retained without synthetic cross-edition assets. CZ and EN full re-export required.
+
+### 0.9.15 – standalone contract acceptance
+
+The exporter identifies its build in each manifest and compares preserved original bytes with the selected input during read-back. The native read-only example demonstrates what a future engine can consume directly (no FS/FSU/LZ decoder required for these queries):
+
+```powershell
+python examples/pak_reader.py "C:\\Games\\Spellcross-PAK-1" unit 0
+python examples/pak_reader.py "C:\\Games\\Spellcross-PAK-1" tile M01_01.DTA 0 0
+python examples/pak_reader.py "C:\\Games\\Spellcross-PAK-1" group ABRMS
+```
+
+Use a validated dataset and exact IDs/full group paths if names collide. This is an example of accessing native payloads, not an engine or proof of rendering/gameplay parity. Full same-build CZ/EN acceptance still required.
