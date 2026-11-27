@@ -295,7 +295,50 @@ static void script_metadata(PackageSummary& out,const AuditRecord& row,const J& 
             bool reviewed=true;
             if(k=="MISSIONMAP")at(0,"map","COMMON.FS");
             else if(k=="ADDUNIT"||k=="ADDSPECIALUNIT")at(1,"definition","unit",true);
-            else if(k=="ADDUNITTOPLAYER")at(0,"definition","unit",true);
+            else if(domain=="tactical"&&k=="ADDMISSIONOBJECTIVE"){
+                // Objective arguments are mission instance IDs or linear map
+                // positions, NOT unit type IDs. Do not invent a type lookup.
+                const auto type=args.empty()?std::string{}:game_upper(args[0]);
+                const bool all_units=type=="DESTROYALLUNITS";
+                const bool unit=type=="DESTROYUNIT"||type=="SAVEUNIT"||type=="TRANSPORTUNIT";
+                const bool tile=type=="DESTROYOBJECT"||type=="SEEPLACE";
+                auto valid_unsigned=[](const std::string& value){
+                    std::uint64_t n{};auto p=std::from_chars(value.data(),value.data()+value.size(),n);
+                    return p.ec==std::errc{}&&p.ptr==value.data()+value.size();
+                };
+                if((all_units&&args.size()==2&&!args[1].empty())||
+                   ((unit||tile)&&args.size()==3&&valid_unsigned(args[1])&&!args[2].empty()))
+                    ++out.metadata_coverage["objective:"+type];
+                else reviewed=false;
+            }else if(domain=="tactical"&&k=="ADDSPECIALEVENT"){
+                const auto type=args.empty()?std::string{}:game_upper(args[0]);
+                const bool start=type=="MISSIONSTART",tile=type=="SEEPLACE",unit=type=="SEEUNIT";
+                auto number=[](std::string_view value)->std::optional<std::uint64_t>{
+                    std::uint64_t n{};auto p=std::from_chars(value.data(),value.data()+value.size(),n);
+                    if(p.ec!=std::errc{}||p.ptr!=value.data()+value.size())return std::nullopt;
+                    return n;
+                };
+                if((start&&args.size()==3)||((tile||unit)&&args.size()==4)){
+                    auto event_pos=start?1u:2u;
+                    auto pct=std::string_view(args.back());
+                    if(pct.ends_with('%'))pct.remove_suffix(1);
+                    const auto probability=number(pct);
+                    if(number(args[event_pos])&&probability&&*probability<=100&&
+                       (start||number(args[1]))){
+                        at(event_pos,"definition","tactical-event:"+row.id,true);
+                        ++out.metadata_coverage["trigger:"+type];
+                    }else reviewed=false;
+                }else reviewed=false;
+            }else if(domain=="tactical"&&k=="NIGHTMISSION"){
+                if(args.empty())++out.metadata_coverage["night-mission"];else reviewed=false;
+            }else if(domain=="upgrade"&&k=="RANGE"){
+                if(args.size()!=1)reviewed=false;
+                else{
+                    std::int64_t n{};auto p=std::from_chars(args[0].data(),args[0].data()+args[0].size(),n);
+                    if(p.ec==std::errc{}&&p.ptr==args[0].data()+args[0].size())++out.metadata_coverage["upgrade-range"];
+                    else reviewed=false;
+                }
+            }else if(k=="ADDUNITTOPLAYER")at(0,"definition","unit",true);
             else if(k=="ATTACKUNITS"||k=="ATTACKSPECIALUNITS"||k=="ARMY"||k=="SUITABLETYPES")all(0,"unit");
             else if(k=="UNITSTOGROUP")all(1,"unit");
             else if(k=="DEFINECOMMANDER"&&domain=="commander"&&!args.empty())definitions["commander"].push_back(game_id(args[0]));
@@ -929,12 +972,29 @@ static GameAudit game_audit(std::string_view root,const std::map<std::string,Pac
         }
         const auto& candidates=find(ref.kind,ref.scope,ref.target);
         std::string status;
-        if(candidates.empty())status=missing;
+        if(candidates.empty()){
+            // Missing end-of-mission messages have a documented generic
+            // presentation fallback in the game. Keep them distinct from
+            // absent mandatory assets and do not synthesize source text.
+            const bool end_text=ref.kind=="text"&&ref.scope=="TEXTS.FS"&&
+                (ref.field.ends_with(" MISSIONENDOKTEXT[0]")||ref.field.ends_with(" MISSIONENDBADTEXT[0]"));
+            status=!partial&&end_text?"missing-end-text":missing;
+        }
         else if(candidates.size()>1)status="ambiguous";
         else if(candidates[0].placeholder)status="placeholder";
         else if(!candidates[0].usable)status="unsupported-target";
-        else if(ref.frame_limit&&candidates[0].atlas&&ref.frame_limit>candidates[0].atlas->sequence_frames)
-            status="frame-limit-review";
+        else if(ref.frame_limit&&candidates[0].atlas&&ref.frame_limit>candidates[0].atlas->sequence_frames){
+            const auto& g=*candidates[0].atlas;
+            // A one-frame attack can refer to an entirely static azimuth
+            // set. Expose that fact distinctly; do not pretend animation
+            // timing or the runtime fallback has been certified.
+            const bool attack=ref.field.ends_with(".light_animation")||ref.field.ends_with(".armor_animation")||ref.field.ends_with(".air_animation");
+            if(attack&&ref.frame_limit==1&&g.fsu_layout&&g.sequence_frames==0&&
+               g.animation_rows==0&&g.static_slopes>0&&g.static_azimuths>0&&
+               g.frames==g.static_slopes*g.static_azimuths)
+                status="static-frame-reference";
+            else status="frame-limit-review";
+        }
         else status="resolved";
         emit(ref,status,candidates);
     }
@@ -993,7 +1053,7 @@ static GameAudit game_audit(std::string_view root,const std::map<std::string,Pac
     report<<"\nGAME METADATA / REFERENCE AUDIT (known rules only)\n";
     for(const auto& [k,n]:coverage)report<<k<<": "<<n<<"\n";
     report<<"\nREFERENCE RESULTS\n";
-    for(auto k:{"resolved","optional-empty","placeholder","missing","not-in-selection","ambiguous","unsupported-target","frame-limit-review","context-shape-review"})
+    for(auto k:{"resolved","optional-empty","placeholder","missing","not-in-selection","ambiguous","unsupported-target","frame-limit-review","context-shape-review","static-frame-reference","missing-end-text"})
         report<<k<<": "<<count(results,k)<<"\n";
     report<<"\nUNREVIEWED SCRIPT COMMANDS (not automatically treated as valid)\n";
     for(const auto& [k,n]:unknown)report<<k<<": "<<n<<"\n";
