@@ -131,6 +131,42 @@ std::optional<std::string> script_definition(const Asset& a,Span d,bool utf8){
     o<<"\n],\"block_count\":"<<blocks<<",\"command_count\":"<<commands<<",\"unknown_count\":"<<unknown<<"}\n";
     return o.str();
 }
+std::optional<std::string> quick_help(const Asset& a,Span d){
+    if(a.format!="QH")return std::nullopt;
+    if(d.empty()||d.size()>1024*1024)throw std::runtime_error("Invalid QH size");
+    for(auto b:d)if((b<32&&b!=9&&b!=10&&b!=13)||b>=127)throw std::runtime_error("Unsupported QH encoding");
+    std::istringstream input(std::string(d.begin(),d.end()));
+    std::ostringstream o;o<<"{\"schema\":\"spellcross-quick-help\",\"version\":1,\"screen\":[640,480],\"regions\":[";
+    std::string line,label;unsigned rect[4]={};bool active=false;std::size_t count=0;
+    auto flush=[&](){
+        if(!active)return;
+        if(trim(label).empty())throw std::runtime_error("Empty QH label");
+        if(count++)o<<',';
+        o<<"{\"rect\":["<<rect[0]<<','<<rect[1]<<','<<rect[2]<<','<<rect[3]<<"],\"text\":"<<json(label)<<'}';
+    };
+    while(std::getline(input,line)){
+        if(!line.empty()&&line.back()=='\r')line.pop_back();
+        auto code=trim(line);if(code.empty()||code.starts_with(';'))continue;
+        std::string_view rest=code;unsigned next[4]={};bool coords=true;
+        for(unsigned i=0;i<4;++i){
+            auto comma=rest.find(',');auto field=trim(rest.substr(0,comma));
+            auto p=std::from_chars(field.data(),field.data()+field.size(),next[i]);
+            if(p.ec!=std::errc{}||p.ptr!=field.data()+field.size()||(i<3&&comma==rest.npos)||(i==3&&comma!=rest.npos)){coords=false;break;}
+            if(i<3)rest.remove_prefix(comma+1);
+        }
+        if(coords){
+            flush();
+            if(!next[2]||!next[3]||next[0]>=640||next[1]>=480||next[2]>640-next[0]||next[3]>480-next[1])
+                throw std::runtime_error("QH region outside 640x480");
+            std::copy(next,next+4,rect);active=true;label.clear();
+        }else{
+            if(!active)throw std::runtime_error("QH text before first region");
+            if(!label.empty())label+='\n';label+=line;
+        }
+    }
+    flush();if(!count)throw std::runtime_error("No QH regions");
+    o<<"],\"region_count\":"<<count<<"}\n";return o.str();
+}
 std::optional<std::string> class_definition(const Asset& a,Span d){
     if(a.format!="DEF"||d.empty()||d.size()>16u*1024u*1024u)return std::nullopt;
     auto name=lower(a.name.substr(a.name.find_last_of("/\\:")+1));
