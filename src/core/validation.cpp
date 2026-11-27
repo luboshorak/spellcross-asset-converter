@@ -1202,7 +1202,7 @@ AuditReport audit_report(std::string_view root,const std::map<std::string,Packag
     report<<"\nSee pak-audit.tsv for every record, conversion reason and review notes.\n"
         <<"Modern-payload means a recognized output representation exists, not gameplay parity.\n"
         <<"Shared primary payload sizes in TSV overlap; use physical totals for storage accounting.\n"
-        <<"No independent original-source byte comparison or runtime certification performed. Known semantic link rules are audited below.\n";
+        <<"Original-source comparison status, when available, is reported above. Runtime certification has not been performed. Known semantic link rules are audited below.\n";
     auto game=game_audit(root,packages);
     report<<game.summary;
     return {report.str(),rows.str(),resource_catalog(root,packages),std::move(game.json),std::move(game.tsv)};
