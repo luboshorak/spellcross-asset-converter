@@ -804,10 +804,10 @@ int main(){
         auto radar_image=sc::decode_image(radar,B(78*76,0));
         require(radar_image&&radar_image->width==78&&radar_image->height==76&&radar_image->opaque[0]==255);
         require(!sc::decode_image(radar,B(78*76+1,0)));
-        sc::Asset mask=installer_bar;mask.name="DATA/INSTALL.FS::MASK.LZ";
-        auto mask_image=sc::decode_image(mask,B(604*272,255));
+        sc::Asset installer_mask=installer_bar;installer_mask.name="DATA/INSTALL.FS::MASK.LZ";
+        auto mask_image=sc::decode_image(installer_mask,B(604*272,255));
         require(mask_image&&mask_image->indices.size()==604*272&&mask_image->indices[0]==255);
-        require(!sc::decode_image(mask,B(604*272,1)));
+        require(!sc::decode_image(installer_mask,B(604*272,1)));
         sc::Asset empty_text;empty_text.name="TEXTS.FS::T07_01B.BAD";empty_text.member=true;empty_text.format="BAD";
         require(sc::is_text_asset(empty_text,B{}));
         sc::Asset cheat;cheat.name="COMMON.FS::CHEATS.LZ";cheat.member=true;cheat.format="LZ";
